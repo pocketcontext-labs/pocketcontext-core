@@ -22,6 +22,7 @@ Applications require a tagged release in `go.mod` and pass everything that is th
 | `tunnel` | Tailcat private tunnel: one project port, loopback only. |
 | `appserver` | `New`, `Project`, `Store`, `Serve`, `Health`, local routes, public listeners, OAuth, hosted mode. |
 | `appserver/routepolicytest` | Frozen negative route set applications check their policy against. |
+| `appserver.TestServer`, `Runtime.HooksConfig` | The real local routes, reader and public handler composed around an application's app, for that application's tests. |
 
 `tools/` holds the repository checks (`name_check.py`, `identity_scan.py`, `build_tags_sync.py`) and `shared_file_diff.py`, which each application release runs against the other application's shared non-Go files.
 

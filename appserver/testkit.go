@@ -27,6 +27,7 @@ type TestServerOptions struct {
 	HostedConfig *HostedConfig
 	ReaderDir    string       // serve this built reader when not empty
 	MCPHandler   http.Handler // enable OAuth-protected MCP when set
+	Clock        func() time.Time // hosted rate limit clock when set; nil means real time
 }
 
 // TestServer is the server's own request path built around an application's
@@ -57,7 +58,7 @@ func (rt *Runtime) NewTestServer(app core.App, opts TestServerOptions) (*TestSer
 	if err != nil {
 		return nil, err
 	}
-	local := &localRoutes{p: p, hosted: opts.Hosted, mcp: opts.MCP, publicURL: "https://" + opts.Domain}
+	local := &localRoutes{p: p, hosted: opts.Hosted, mcp: opts.MCP, publicURL: "https://" + opts.Domain, clock: opts.Clock}
 	event := &core.ServeEvent{App: app, Router: router}
 	if err := local.register(event); err != nil {
 		return nil, err

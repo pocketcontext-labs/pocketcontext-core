@@ -37,6 +37,7 @@ type localRoutes struct {
 	publicURL string
 	mcp       bool
 	hosted    bool
+	clock     func() time.Time // hosted rate limits; nil means time.Now
 }
 
 // Sign-in code lifetimes in seconds. Codes live only in server memory.
@@ -69,6 +70,13 @@ func (s *codeStore) clock() time.Time {
 }
 
 // issue creates a code for the user and purges expired ones.
+func (l *localRoutes) now() time.Time {
+	if l.clock != nil {
+		return l.clock()
+	}
+	return time.Now()
+}
+
 func (s *codeStore) issue(user string, ttl time.Duration) (string, time.Time) {
 	code := atomicfile.RandomHex(24)
 	s.mu.Lock()
@@ -140,7 +148,7 @@ func (l *localRoutes) register(e *core.ServeEvent) error {
 	rt := l.p.rt
 	id := rt.cfg.Identity
 	if l.hosted {
-		registerHostedRateLimits(e, rt)
+		registerHostedRateLimitsClock(e, rt, l.now)
 	}
 	// DNS rebinding protection: a web page cannot reach this server under another name.
 	e.Router.Bind(&hook.Handler[*core.RequestEvent]{

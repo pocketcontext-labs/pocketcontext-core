@@ -39,9 +39,15 @@ type Instance struct {
 // usable across versions so a mismatch can be diagnosed and shut down cleanly.
 // A zero format is an older server that did not advertise its storage contract.
 func CheckServerCompatibility(p *Project, i *Instance) error {
-	version := p.rt.cfg.Version
-	if slices.Contains(p.rt.cfg.Identity.LegacyAppIDs, i.App) {
-		return fmt.Errorf("running server is an earlier %s release (%s); stop it, then restart with this release", p.rt.cfg.Identity.DisplayName, i.Version)
+	return p.rt.CheckServerCompatibility(i)
+}
+
+// CheckServerCompatibility is the same check for a client without a local
+// project, such as one forwarding to a remote server.
+func (rt *Runtime) CheckServerCompatibility(i *Instance) error {
+	version := rt.cfg.Version
+	if slices.Contains(rt.cfg.Identity.LegacyAppIDs, i.App) {
+		return fmt.Errorf("running server is an earlier %s release (%s); stop it, then restart with this release", rt.cfg.Identity.DisplayName, i.Version)
 	}
 	if i.Version != version {
 		return fmt.Errorf("running server version %q differs from this binary %q; stop it cleanly with its own binary, then restart with the selected release", i.Version, version)

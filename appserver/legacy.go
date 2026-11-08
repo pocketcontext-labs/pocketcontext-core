@@ -69,6 +69,11 @@ var ErrEarlierRelease = errors.New("unsupported database")
 // because a WAL file without its -shm cannot be opened read-only); the synced
 // file is never opened.
 func checkDatabase(rt *Runtime, db, synced string) error {
+	return rt.CheckDatabase(db, synced)
+}
+
+// CheckDatabase is checkDatabase for read-only diagnostics on a private copy.
+func (rt *Runtime) CheckDatabase(db, synced string) error {
 	u := sqliteuri.File(db)
 	conn, err := sql.Open("sqlite3", u.String())
 	if err != nil {

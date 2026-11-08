@@ -71,3 +71,25 @@ jobs:
           export CC="$PWD/tools/zig-cc"
           go build -tags "$(cat build-tags.txt)" ./...
           go vet -tags "$(cat build-tags.txt)" ./...
+
+  mcp-oauth-browser:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+      - name: MCP OAuth browser callback regression
+        run: |
+          mkdir -p "$RUNNER_TEMP/pw"
+          cd "$RUNNER_TEMP/pw"
+          npm init -y
+          npm install playwright@1.62.1
+          npx playwright install --with-deps chromium
+          cd "$GITHUB_WORKSPACE"
+          CORE_MCP_BROWSER_TEST=1 CORE_PLAYWRIGHT_PACKAGE_JSON="$RUNNER_TEMP/pw/package.json" go test -tags "$(cat build-tags.txt)" ./appserver -run '^TestMCPOAuthBrowser$' -count=1

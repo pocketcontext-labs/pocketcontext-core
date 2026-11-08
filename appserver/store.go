@@ -230,6 +230,9 @@ func safeName(s string) string {
 	return string(out)
 }
 
+// NewStore returns the store of project p. It opens nothing.
+func NewStore(p *Project) *Store { return &Store{p: p} }
+
 // LivePath returns the private working database path.
 func (s *Store) LivePath() string { return s.livePath() }
 

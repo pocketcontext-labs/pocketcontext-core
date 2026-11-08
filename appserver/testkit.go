@@ -25,8 +25,8 @@ type TestServerOptions struct {
 	Hosted       bool
 	MCP          bool
 	HostedConfig *HostedConfig
-	ReaderDir    string       // serve this built reader when not empty
-	MCPHandler   http.Handler // enable OAuth-protected MCP when set
+	ReaderDir    string           // serve this built reader when not empty
+	MCPHandler   http.Handler     // enable OAuth-protected MCP when set
 	Clock        func() time.Time // hosted rate limit clock when set; nil means real time
 }
 

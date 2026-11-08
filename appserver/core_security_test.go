@@ -193,6 +193,7 @@ func TestIdentityValuesComeFromConfiguration(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CACHE_HOME", dir)
 	t.Setenv("HOME", dir)
+	t.Setenv("LocalAppData", dir)
 	p, err := testRT.Resolve(filepath.Join(t.TempDir(), id.DatabaseFile))
 	if err != nil {
 		t.Fatal(err)
@@ -275,6 +276,8 @@ func TestLocalKeyPrivateAndRemovedOnStop(t *testing.T) {
 func TestSecondServerRefusedByCacheLock(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(root, "cache"))
+	t.Setenv("HOME", filepath.Join(root, "home"))
+	t.Setenv("LocalAppData", filepath.Join(root, "cache"))
 	p, err := testRT.Resolve(filepath.Join(root, "project", testRT.cfg.Identity.DatabaseFile))
 	if err != nil {
 		t.Fatal(err)

@@ -35,4 +35,4 @@ Tags `vX.Y.Z`. Before 1.0 a minor bump may change the API; applications pin an e
 
 ## License
 
-The vendored server packages `database`, `sqliteuri` and `maintenance` are under the MIT license in their folders; see [VENDORED.md](VENDORED.md). The rest of this module has no license grant, matching the repositories it was extracted from.
+This module is under the [MIT license](LICENSE). The vendored server packages `database`, `sqliteuri` and `maintenance` keep their original MIT license files; see [VENDORED.md](VENDORED.md).

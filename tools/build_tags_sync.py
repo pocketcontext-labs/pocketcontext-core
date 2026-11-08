@@ -21,7 +21,7 @@ RECORD = ROOT / 'tools' / 'build-tags.sum'
 
 def state():
     version = re.search(r'github\.com/tailscale/tailcat (v\S+)', (ROOT / 'go.mod').read_text()).group(1)
-    digest = hashlib.sha256((ROOT / 'build-tags.txt').read_bytes()).hexdigest()
+    digest = hashlib.sha256((ROOT / 'build-tags.txt').read_bytes().replace(b'\r\n', b'\n')).hexdigest()
     return version, digest
 
 

@@ -1,0 +1,73 @@
+name: Test
+on:
+  push:
+  pull_request:
+  workflow_call:
+permissions:
+  contents: read
+env:
+  CGO_ENABLED: "1"
+  GOTOOLCHAIN: local
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm, macos-15, windows-2025]
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      PY: ${{ matrix.runner == 'windows-2025' && 'python' || 'python3' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Repository checks
+        run: |
+          $PY tools/name_check.py
+          $PY tools/identity_scan.py
+          $PY tools/build_tags_sync.py
+      - name: Build and vet
+        run: |
+          go build -tags "$(cat build-tags.txt)" ./...
+          go vet -tags "$(cat build-tags.txt)" ./...
+      # Windows runners provide MinGW-w64 gcc for CGO. The vendored database and
+      # maintenance tests assume POSIX permissions, so Windows runs these packages.
+      - name: Unit tests
+        run: |
+          packages=./...
+          if [ "$RUNNER_OS" = Windows ]; then packages="./appidentity ./atomicfile ./appserver/... ./profiles ./tunnel ./mcpobserve"; fi
+          go test -tags "$(cat build-tags.txt)" -timeout 15m $packages
+      - name: Race detector on concurrency-heavy packages
+        if: matrix.runner == 'ubuntu-24.04'
+        # TestHostedRequestUnknownEmailAndSMTPPrivate trips a data race inside
+        # PocketBase (ReloadSettings against request logging), also present in the
+        # source applications; core adds no goroutine to that path.
+        run: go test -race -tags "$(cat build-tags.txt)" -timeout 20m -skip TestHostedRequestUnknownEmailAndSMTPPrivate ./database ./maintenance ./mcpobserve ./profiles ./tunnel ./appserver/...
+
+  windows-cross-vet:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: 0.15.2
+      - name: Cross-compile and vet for Windows with Zig
+        env:
+          GOOS: windows
+          GOARCH: amd64
+          ZIG_TARGET: x86_64-windows-gnu
+        run: |
+          export CC="$PWD/tools/zig-cc"
+          go build -tags "$(cat build-tags.txt)" ./...
+          go vet -tags "$(cat build-tags.txt)" ./...

@@ -841,6 +841,11 @@ func (o *mcpOAuth) revoke(w http.ResponseWriter, r *http.Request) {
 }
 func (o *mcpOAuth) connections(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" && !strings.Contains(r.Header.Get("Accept"), "application/json") {
+		if target := o.rt.cfg.Text.OAuthConsent.Page.ConnectionsPath; target != "" {
+			w.Header().Set("Location", target)
+			w.WriteHeader(http.StatusFound)
+			return
+		}
 		o.oauthPage(w, "Connected apps", "", "", true, o.hosted)
 		return
 	}

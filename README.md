@@ -7,7 +7,7 @@ Applications require a tagged release in `go.mod` and pass everything that is th
 - `appidentity.Identity` (every name: app id, command, port, database and configuration file, environment prefix, local-key header, account email, ...). Every field is required; there is no default.
 - `appserver.Policy`: `PublicRoute` is the complete public route allowlist, plus maintenance reads and observability allowlists.
 - `appserver.Hooks`: product code at the points applications diverge.
-- `appserver.Text`: product copy.
+- `appserver.Text`: product copy. `Text.OAuthConsent.Page` (`OAuthPage`) is optional trusted presentation of the OAuth pages: `CSS`, `BrandHTML`, `SignInPath` (the consent page's same-tab Log in, which appends `?next=` and the encoded `/oauth/authorize` request; the application must validate `next`) and `ConnectionsPath` (where a browser visit to `/oauth/connections` redirects; the JSON API is unchanged). Empty fields keep the plain page.
 
 ## Packages
 

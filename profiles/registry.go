@@ -1,4 +1,4 @@
-// Package profiles stores private, machine-local knowledge-base registrations.
+// Package profiles stores private, machine-local project registrations.
 package profiles
 
 import (
@@ -72,7 +72,7 @@ func ValidateName(name string) error {
 		}
 	}
 	if name == "." || name == ".." {
-		return errors.New("invalid knowledge-base name")
+		return errors.New("invalid profile name")
 	}
 	return nil
 }
@@ -195,7 +195,7 @@ func (r *Registry) Find(name string) (Entry, error) {
 			return e, nil
 		}
 	}
-	return Entry{}, fmt.Errorf("profile %q not found; name a knowledge base or set a default", name)
+	return Entry{}, fmt.Errorf("profile %q not found; name a profile or set a default", name)
 }
 
 // Put allows an explicit update only for the same stable project identity.

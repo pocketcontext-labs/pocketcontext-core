@@ -36,13 +36,76 @@ type Config struct {
 // It runs after core's fixed checks (exact Host/Origin, /up, path canonicalization).
 type PublicRouteFactory func(app core.App) func(method, path string) bool
 
-// Policy holds the application's public routes, maintenance reads and pricing.
+// Policy holds the application's public routes, maintenance reads, wire values
+// and limits.
 type Policy struct {
-	PublicRoute       PublicRouteFactory           // required; the only public allowlist
-	Maintenance       maintenance.Policy           // required; explicit empty sets are allowed
-	Observe           mcpobserve.Policy            // required; explicit empty lists are allowed
+	PublicRoute PublicRouteFactory // required; the only public allowlist
+	Maintenance maintenance.Policy // required; explicit empty sets are allowed
+	Observe     mcpobserve.Policy  // required; explicit empty lists are allowed
+	// OAuthScope is the one scope of the application's MCP endpoint. Connected
+	// clients store it, so changing it later disconnects them.
+	OAuthScope string // required
+	// PublicBodyLimit is the largest request body, in bytes, a public request
+	// outside sign-in and OAuth may carry.
+	PublicBodyLimit   int64                        // required
+	Legacy            LegacySchema                 // required; explicit empty lists are allowed
+	Hosted            HostedBudget                 // zero means the application has no hosted mode
 	HostedRequestCost func(*core.RequestEvent) int // nil means every request costs 1
 	AllowPublicUIDev  bool                         // only an application that uses it sets this
+}
+
+// LegacySchema names what identifies a database of an earlier release that
+// this application refuses to open. Both lists must be non-nil.
+type LegacySchema struct {
+	Migrations []string // migration files only earlier releases recorded
+	Tables     []string // tables only earlier releases created
+	// Description says in a few words what the earlier releases were, for the
+	// refusal message. Required when either list has entries.
+	Description string
+}
+
+// HostedBudget is the hosted request budget of one signed-in account: Burst
+// requests at once, refilled at PerSecond. Label names the limit in 429
+// responses, a value clients may match on. The zero value means the
+// application cannot be served hosted; a partly set budget is refused.
+type HostedBudget struct {
+	Label     string
+	Burst     int
+	PerSecond int
+}
+
+func (b HostedBudget) configured() bool { return b != HostedBudget{} }
+
+func (p Policy) validate() error {
+	if p.OAuthScope == "" || len(p.OAuthScope) > 64 {
+		return errors.New("Policy.OAuthScope is required and at most 64 bytes")
+	}
+	for _, c := range p.OAuthScope {
+		// RFC 6749 scope-token, so it is also safe in a quoted header value.
+		if c < 0x21 || c > 0x7e || c == '"' || c == '\\' {
+			return errors.New("Policy.OAuthScope must be one OAuth scope token")
+		}
+	}
+	if p.PublicBodyLimit <= 0 {
+		return errors.New("Policy.PublicBodyLimit is required")
+	}
+	if p.Legacy.Migrations == nil || p.Legacy.Tables == nil {
+		return errors.New("Policy.Legacy is required")
+	}
+	if len(p.Legacy.Migrations)+len(p.Legacy.Tables) > 0 && p.Legacy.Description == "" {
+		return errors.New("Policy.Legacy.Description is required with legacy entries")
+	}
+	if p.Hosted.configured() {
+		if p.Hosted.Burst <= 0 || p.Hosted.PerSecond <= 0 || p.Hosted.Label == "" {
+			return errors.New("Policy.Hosted needs Label, Burst and PerSecond")
+		}
+		for _, c := range p.Hosted.Label {
+			if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '_') {
+				return errors.New("Policy.Hosted.Label must use a-z, 0-9 and _")
+			}
+		}
+	}
+	return nil
 }
 
 // Hooks are the extension points at the exact places applications diverge.
@@ -74,6 +137,10 @@ type Text struct {
 	BudgetExhausted    string // the 429 message
 	OTPSubject         string
 	OTPSenderName      string
+	// OTPLoginPath is the same-origin reader path the hosted sign-in email
+	// links to. Core appends "?otpId=...&otp=...", so the path has no query; a
+	// fragment route such as "/#/login" is allowed.
+	OTPLoginPath string
 }
 
 // OAuthConsentText is trusted static copy from the application, used as template
@@ -81,7 +148,12 @@ type Text struct {
 type OAuthConsentText struct {
 	ConnectionsHTML string
 	RequestHTML     string
-	Page            OAuthPage
+	// SignInHTML tells a person who is not signed in how to sign in when the
+	// application is not hosted, where that depends on the application's own
+	// commands. It is inline content of one paragraph; {{.Product}} is the
+	// display name. Hosted instances show core's email sign-in text instead.
+	SignInHTML string
+	Page       OAuthPage
 }
 
 // OAuthPage is an application's optional presentation of the server-rendered
@@ -177,16 +249,24 @@ func New(cfg Config) (*Runtime, error) {
 	if cfg.Policy.Observe.Tools == nil || cfg.Policy.Observe.APIRoutes == nil {
 		return nil, errors.New("appserver: Policy.Observe is required")
 	}
+	if err := cfg.Policy.validate(); err != nil {
+		return nil, fmt.Errorf("appserver: %w", err)
+	}
 	for name, value := range map[string]string{
 		"AccountName": cfg.Text.AccountName, "LegacyRecreateHint": cfg.Text.LegacyRecreateHint,
 		"OAuthResourceName": cfg.Text.OAuthResourceName, "BudgetExhausted": cfg.Text.BudgetExhausted,
 		"OTPSubject": cfg.Text.OTPSubject, "OTPSenderName": cfg.Text.OTPSenderName,
 		"OAuthConsent.ConnectionsHTML": cfg.Text.OAuthConsent.ConnectionsHTML,
 		"OAuthConsent.RequestHTML":     cfg.Text.OAuthConsent.RequestHTML,
+		"OAuthConsent.SignInHTML":      cfg.Text.OAuthConsent.SignInHTML,
+		"OTPLoginPath":                 cfg.Text.OTPLoginPath,
 	} {
 		if value == "" {
 			return nil, fmt.Errorf("appserver: Text.%s is required", name)
 		}
+	}
+	if err := validateOAuthAppPath(cfg.Text.OTPLoginPath); err != nil || strings.Contains(cfg.Text.OTPLoginPath, "?") {
+		return nil, errors.New("appserver: Text.OTPLoginPath must be a same-origin absolute path without a query")
 	}
 	if cfg.Hooks.Bindings != nil {
 		if _, collides := cfg.Hooks.Bindings(goja.New())["sha256"]; collides {

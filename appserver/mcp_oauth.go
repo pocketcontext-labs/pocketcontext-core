@@ -34,7 +34,6 @@ func MCPAuthToken(ctx context.Context) string {
 
 type mcpAuthKey struct{}
 
-const mcpScope = "knowledge"
 const oauthAccessLifetime = 10 * time.Minute
 const oauthRefreshLifetime = 30 * 24 * time.Hour
 
@@ -95,6 +94,9 @@ func (o *mcpOAuth) clock() time.Time {
 	return time.Now()
 }
 func (o *mcpOAuth) resource() string { return o.origin + "/mcp" }
+
+// scope is the application's one scope; core has none of its own.
+func (o *mcpOAuth) scope() string { return o.rt.cfg.Policy.OAuthScope }
 
 // This authorization server serves only its own MCP endpoint. Clients that omit
 // resource still receive grants bound to that endpoint
@@ -413,9 +415,9 @@ func (o *mcpOAuth) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.URL.Path {
 	case "/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp":
-		oauthJSON(w, 200, map[string]any{"resource": o.resource(), "authorization_servers": []string{o.origin}, "scopes_supported": []string{mcpScope}, "bearer_methods_supported": []string{"header"}, "resource_name": o.rt.cfg.Text.OAuthResourceName})
+		oauthJSON(w, 200, map[string]any{"resource": o.resource(), "authorization_servers": []string{o.origin}, "scopes_supported": []string{o.scope()}, "bearer_methods_supported": []string{"header"}, "resource_name": o.rt.cfg.Text.OAuthResourceName})
 	case "/.well-known/oauth-authorization-server":
-		oauthJSON(w, 200, map[string]any{"issuer": o.origin, "authorization_endpoint": o.origin + "/oauth/authorize", "token_endpoint": o.origin + "/oauth/token", "registration_endpoint": o.origin + "/oauth/register", "revocation_endpoint": o.origin + "/oauth/revoke", "response_types_supported": []string{"code"}, "grant_types_supported": []string{"authorization_code", "refresh_token"}, "token_endpoint_auth_methods_supported": []string{"none", "client_secret_basic", "client_secret_post"}, "code_challenge_methods_supported": []string{"S256"}, "scopes_supported": []string{mcpScope}})
+		oauthJSON(w, 200, map[string]any{"issuer": o.origin, "authorization_endpoint": o.origin + "/oauth/authorize", "token_endpoint": o.origin + "/oauth/token", "registration_endpoint": o.origin + "/oauth/register", "revocation_endpoint": o.origin + "/oauth/revoke", "response_types_supported": []string{"code"}, "grant_types_supported": []string{"authorization_code", "refresh_token"}, "token_endpoint_auth_methods_supported": []string{"none", "client_secret_basic", "client_secret_post"}, "code_challenge_methods_supported": []string{"S256"}, "scopes_supported": []string{o.scope()}})
 	case "/oauth/register":
 		o.register(w, r)
 	case "/oauth/authorize":
@@ -490,7 +492,7 @@ func (o *mcpOAuth) register(w http.ResponseWriter, r *http.Request) {
 		oauthError(w, 503, "temporarily_unavailable", "Could not register client; try later or remove unused connections.")
 		return
 	}
-	response := map[string]any{"client_id": c.ID, "client_id_issued_at": c.Created, "client_name": c.Name, "redirect_uris": c.Redirects, "token_endpoint_auth_method": c.Method, "grant_types": []string{"authorization_code", "refresh_token"}, "response_types": []string{"code"}, "scope": mcpScope}
+	response := map[string]any{"client_id": c.ID, "client_id_issued_at": c.Created, "client_name": c.Name, "redirect_uris": c.Redirects, "token_endpoint_auth_method": c.Method, "grant_types": []string{"authorization_code", "refresh_token"}, "response_types": []string{"code"}, "scope": o.scope()}
 	if secret != "" {
 		response["client_secret"] = secret
 		response["client_secret_expires_at"] = 0
@@ -537,8 +539,8 @@ func (o *mcpOAuth) authRequest(q url.Values) (oauthClient, error) {
 	if len(q.Get("state")) > 2048 {
 		return c, errors.New("state must not exceed 2048 bytes")
 	}
-	if q.Get("scope") != "" && q.Get("scope") != mcpScope {
-		return c, errors.New("only knowledge scope is supported")
+	if q.Get("scope") != "" && q.Get("scope") != o.scope() {
+		return c, errors.New("scope is not supported")
 	}
 	return c, nil
 }
@@ -674,8 +676,8 @@ func (o *mcpOAuth) token(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if f.Get("scope") != "" && f.Get("scope") != mcpScope {
-		oauthError(w, 400, "invalid_scope", "Only knowledge scope is supported.")
+	if f.Get("scope") != "" && f.Get("scope") != o.scope() {
+		oauthError(w, 400, "invalid_scope", "Scope is not supported.")
 		return
 	}
 	if !o.acceptsResource(f) {
@@ -783,7 +785,7 @@ func (o *mcpOAuth) token(w http.ResponseWriter, r *http.Request) {
 	} else {
 		setOAuthOutcome(w, "token_issued", "success")
 	}
-	oauthJSON(w, 200, map[string]any{"access_token": access, "token_type": "Bearer", "expires_in": int(oauthAccessLifetime.Seconds()), "refresh_token": refresh, "scope": mcpScope})
+	oauthJSON(w, 200, map[string]any{"access_token": access, "token_type": "Bearer", "expires_in": int(oauthAccessLifetime.Seconds()), "refresh_token": refresh, "scope": o.scope()})
 }
 func (o *mcpOAuth) revoke(w http.ResponseWriter, r *http.Request) {
 	if !strings.HasPrefix(r.Header.Get("Content-Type"), "application/x-www-form-urlencoded") || r.ParseForm() != nil {
@@ -919,7 +921,7 @@ func (o *mcpOAuth) access(w http.ResponseWriter, r *http.Request) {
 		} else {
 			setOAuthOutcome(w, "invalid_token", "rejected")
 		}
-		w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer resource_metadata="%s/.well-known/oauth-protected-resource/mcp", scope="knowledge"`, o.origin))
+		w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer resource_metadata="%s/.well-known/oauth-protected-resource/mcp", scope="%s"`, o.origin, o.scope()))
 		oauthError(w, 401, "invalid_token", "Connect and authorize "+o.rt.cfg.Identity.DisplayName+" first.")
 		return
 	}
@@ -928,8 +930,8 @@ func (o *mcpOAuth) access(w http.ResponseWriter, r *http.Request) {
 		oauthError(w, 503, "temporarily_unavailable", "Account unavailable.")
 		return
 	}
-	// Never forward the external credential or management headers to knowledge
-	// operations. The context retains the public transport trust boundary.
+	// Never forward the external credential or management headers to the
+	// application's operations. The context retains the public transport trust boundary.
 	req := r.Clone(context.WithValue(r.Context(), mcpAuthKey{}, internalToken))
 	req.Header = r.Header.Clone()
 	req.Header.Del("Authorization")

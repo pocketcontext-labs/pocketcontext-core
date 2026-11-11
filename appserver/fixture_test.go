@@ -32,12 +32,17 @@ func fixtureConfig(public func(method, path string) bool) Config {
 			PublicRoute: func(core.App) func(string, string) bool { return public },
 			Maintenance: maintenance.Policy{ReadPosts: map[string]bool{"/api/fixture/read": true}, ReadGets: map[string]bool{}},
 			Observe:     mcpobserve.Policy{Tools: []string{"fixture_tool"}, APIRoutes: []string{"/api/fixture/read"}},
+			// Values unlike any shipped product's, so a hardcoded one in core fails.
+			OAuthScope: "fixture.read", PublicBodyLimit: 64 << 10,
+			Legacy: LegacySchema{Migrations: []string{"1700000000_fixture_old.js"}, Tables: []string{"fixture_members"}, Description: "fixture groups"},
+			Hosted: HostedBudget{Label: "fixture_account", Burst: 50, PerSecond: 5},
 		},
 		Text: Text{
 			AccountName: "Fixture Account", LegacyRecreateHint: "Keep the earlier fixture release or recreate its data.",
 			OAuthResourceName: "Fixture memory", BudgetExhausted: "Fixture budget exhausted. Retry after the indicated delay.",
-			OTPSubject: "Log in to Fixture", OTPSenderName: "Fixture Sender",
-			OAuthConsent: OAuthConsentText{ConnectionsHTML: "<p>These apps can read fixture notes.</p>", RequestHTML: "<p><strong>{{.Name}}</strong> is asking for fixture access.</p>"},
+			OTPSubject: "Log in to Fixture", OTPSenderName: "Fixture Sender", OTPLoginPath: "/#/fixture-login",
+			OAuthConsent: OAuthConsentText{ConnectionsHTML: "<p>These apps can read fixture notes.</p>", RequestHTML: "<p><strong>{{.Name}}</strong> is asking for fixture access.</p>",
+				SignInHTML: `If you are not signed in, open your fresh {{.Product}} reader sign-in link in another tab of this browser, then return here. Your setup agent can issue one with <code>open --public</code>. You can also <a href="/" target="_blank" rel="noopener">open the reader</a> and use your password if you set one.`},
 		},
 	}
 }

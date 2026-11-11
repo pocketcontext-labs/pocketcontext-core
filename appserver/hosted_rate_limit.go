@@ -18,9 +18,6 @@ import (
 	"golang.org/x/time/rate"
 )
 
-const hostedKnowledgeBurst = 1200
-const hostedKnowledgeRate = 100
-
 // Rate metadata is also carried in the body because MCP tools do not expose the
 // headers of their internal HTTP requests. Reset is seconds until the bucket is full.
 type rateLimitInfo struct {
@@ -56,8 +53,9 @@ func writeRateLimit(app core.App, w http.ResponseWriter, r *http.Request, info r
 }
 
 // configureHostedRateLimits changes only process-local settings. Authentication
-// keeps PocketBase's original rules. Knowledge requests with valid users tokens
-// instead use one bounded account budget, independent of token, client or run key.
+// keeps PocketBase's original rules. API requests with valid users tokens
+// instead use the application's bounded account budget (Policy.Hosted),
+// independent of token, client or run key.
 func configureHostedRateLimits(app core.App) {
 	settings := app.Settings()
 	settings.RateLimits.Enabled = true
@@ -77,13 +75,15 @@ func registerHostedRateLimits(e *core.ServeEvent, rt *Runtime) {
 func registerHostedRateLimitsClock(e *core.ServeEvent, rt *Runtime, clock func() time.Time) {
 	var mu sync.Mutex
 	buckets := map[string]*rate.Limiter{}
-	e.Router.Bind(&hook.Handler[*core.RequestEvent]{Id: "hostedKnowledgeRateLimit", Priority: apis.DefaultLoadAuthTokenMiddlewarePriority + 6, Func: func(re *core.RequestEvent) error {
+	budget := rt.cfg.Policy.Hosted
+	perSecond := float64(budget.PerSecond)
+	e.Router.Bind(&hook.Handler[*core.RequestEvent]{Id: "hostedAccountRateLimit", Priority: apis.DefaultLoadAuthTokenMiddlewarePriority + 6, Func: func(re *core.RequestEvent) error {
 		if re.Auth != nil && re.Auth.Collection().Name == "users" && strings.HasPrefix(re.Request.URL.Path, "/api/") {
 			key := re.Auth.Id
 			mu.Lock()
 			bucket := buckets[key]
 			if bucket == nil {
-				bucket = rate.NewLimiter(hostedKnowledgeRate, hostedKnowledgeBurst)
+				bucket = rate.NewLimiter(rate.Limit(perSecond), budget.Burst)
 				buckets[key] = bucket
 			}
 			mu.Unlock()
@@ -96,8 +96,8 @@ func registerHostedRateLimitsClock(e *core.ServeEvent, rt *Runtime, clock func()
 			now := clock()
 			if !bucket.AllowN(now, cost) {
 				tokens := bucket.TokensAt(now)
-				retry := max(1, int(math.Ceil((float64(cost)-tokens)/hostedKnowledgeRate)))
-				info := rateLimitInfo{"authenticated_knowledge", retry, hostedKnowledgeBurst, max(0, int(tokens)), max(1, int(math.Ceil((hostedKnowledgeBurst-tokens)/hostedKnowledgeRate)))}
+				retry := max(1, int(math.Ceil((float64(cost)-tokens)/perSecond)))
+				info := rateLimitInfo{budget.Label, retry, budget.Burst, max(0, int(tokens)), max(1, int(math.Ceil((float64(budget.Burst)-tokens)/perSecond)))}
 				info.headers(re.Response.Header())
 				logRateLimit(re.App, key, re.Request.Pattern, info)
 				return re.JSON(http.StatusTooManyRequests, map[string]any{"status": 429, "message": rt.cfg.Text.BudgetExhausted, "data": map[string]any{"rate_limit": info}})

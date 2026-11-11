@@ -19,8 +19,9 @@ func TestEarlierReleaseRefused(t *testing.T) {
 		name, schema string
 		refused      bool
 	}{
-		{"old migrations", "CREATE TABLE _migrations (file TEXT PRIMARY KEY, applied INTEGER); INSERT INTO _migrations VALUES ('1640988000_init.go', 1), ('1791500000_spaces.js', 2);", true},
-		{"membership table", "CREATE TABLE space_members (id TEXT PRIMARY KEY);", true},
+		{"old migrations", "CREATE TABLE _migrations (file TEXT PRIMARY KEY, applied INTEGER); INSERT INTO _migrations VALUES ('1640988000_init.go', 1), ('1700000000_fixture_old.js', 2);", true},
+		{"membership table", "CREATE TABLE fixture_members (id TEXT PRIMARY KEY);", true},
+		{"another application history", "CREATE TABLE space_members (id TEXT PRIMARY KEY);", false},
 		{"unknown migration", "CREATE TABLE _migrations (file TEXT PRIMARY KEY, applied INTEGER); INSERT INTO _migrations VALUES ('1999999999_future.js', 1);", true},
 		{"unknown system migration", "CREATE TABLE _migrations (file TEXT PRIMARY KEY, applied INTEGER); INSERT INTO _migrations VALUES ('1999999999_future.go', 1);", true},
 		{"unknown migration extension", "CREATE TABLE _migrations (file TEXT PRIMARY KEY, applied INTEGER); INSERT INTO _migrations VALUES ('future.sql', 1);", true},
@@ -49,7 +50,7 @@ func TestEarlierReleaseRefused(t *testing.T) {
 			if tc.refused && !strings.Contains(err.Error(), "/synced/fixture.db") {
 				t.Fatalf("message does not name the database: %v", err)
 			}
-			if tc.name == "old migrations" && !strings.Contains(err.Error(), "earlier") {
+			if tc.name == "old migrations" && !strings.Contains(err.Error(), "earlier Fixture App release (fixture groups)") {
 				t.Fatalf("message: %v", err)
 			}
 			after, err := atomicfile.FileSHA256(path)
@@ -70,7 +71,7 @@ func TestEarlierReleaseWorkingCopyUntouched(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec("CREATE TABLE space_members (id TEXT PRIMARY KEY)"); err != nil {
+	if _, err := db.Exec("CREATE TABLE fixture_members (id TEXT PRIMARY KEY)"); err != nil {
 		t.Fatal(err)
 	}
 	db.Close()

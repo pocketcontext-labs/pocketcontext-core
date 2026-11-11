@@ -5,9 +5,9 @@ Shared Go library for the PocketContext family of single-owner, one-binary appli
 Applications require a tagged release in `go.mod` and pass everything that is theirs to `appserver.New`:
 
 - `appidentity.Identity` (every name: app id, command, port, database and configuration file, environment prefix, local-key header, account email, ...). Every field is required; there is no default.
-- `appserver.Policy`: `PublicRoute` is the complete public route allowlist, plus maintenance reads and observability allowlists.
+- `appserver.Policy`: `PublicRoute` is the complete public route allowlist, plus maintenance reads and observability allowlists. It also carries the values that are the application's and not core's: `OAuthScope` (the one MCP scope; connected clients store it), `PublicBodyLimit` (bytes per public request), `Legacy` (the migrations and tables of earlier releases whose databases are refused; explicit empty lists when there are none) and `Hosted` (the per-account hosted budget and its label in 429 responses; left zero, hosted serving is refused).
 - `appserver.Hooks`: product code at the points applications diverge.
-- `appserver.Text`: product copy. `Text.OAuthConsent.Page` (`OAuthPage`) is optional trusted presentation of the OAuth pages: `CSS`, `BrandHTML`, `SignInPath` (the consent page's same-tab Log in, which appends `?next=` and the encoded `/oauth/authorize` request; the application must validate `next`) and `ConnectionsPath` (where a browser visit to `/oauth/connections` redirects; the JSON API is unchanged). Empty fields keep the plain page.
+- `appserver.Text`: product copy, including `OTPLoginPath` (the reader route the hosted sign-in email links to) and `OAuthConsent.SignInHTML` (how to sign in outside hosted mode). `Text.OAuthConsent.Page` (`OAuthPage`) is optional trusted presentation of the OAuth pages: `CSS`, `BrandHTML`, `SignInPath` (the consent page's same-tab Log in, which appends `?next=` and the encoded `/oauth/authorize` request; the application must validate `next`) and `ConnectionsPath` (where a browser visit to `/oauth/connections` redirects; the JSON API is unchanged). Empty fields keep the plain page.
 
 ## Packages
 
@@ -25,6 +25,12 @@ Applications require a tagged release in `go.mod` and pass everything that is th
 | `appserver.TestServer`, `Runtime.HooksConfig` | The real local routes, reader and public handler composed around an application's app, for that application's tests. |
 
 `tools/` holds the repository checks (`name_check.py`, `identity_scan.py`, `build_tags_sync.py`) and `shared_file_diff.py`, which each application release runs against the other application's shared non-Go files.
+
+## What core fixes for every application
+
+These names are part of core's contract and are not configurable: the `users` collection holding the one account, the local management routes under `/api/bundle/`, the sign-in pages under `/bundle/`, the maintenance route `/api/context/maintenance` with the app store key `contextMaintenanceReadOnly`, and the OAuth and MCP paths (`/oauth/*`, `/mcp`, `/.well-known/oauth-*`). Everything else an application decides is in `Config`.
+
+The synced database is written back after 3 quiet seconds, and at the latest `appserver.MaxWriteBackDelay` (one minute) after the oldest unsaved change, so steady writes still reach the synced folder. Recording a change never waits for a write-back.
 
 ## Building
 

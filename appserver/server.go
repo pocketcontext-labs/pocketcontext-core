@@ -140,6 +140,9 @@ func ServeContext(parent context.Context, p *Project, opts ServeOptions) (result
 		return errors.New("--hosted-init requires --hosted")
 	}
 	if opts.Hosted {
+		if !p.rt.cfg.Policy.Hosted.configured() {
+			return errNoHostedMode
+		}
 		if !opts.MCP || opts.HTTPSDomain == "" || !opts.Headless || opts.Service != nil || opts.ACMEEmail != "" {
 			return errors.New("hosted mode requires --headless --domain --mcp and excludes tunnels and ACME")
 		}

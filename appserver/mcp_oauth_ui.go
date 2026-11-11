@@ -6,7 +6,8 @@ import (
 	"strings"
 )
 
-// oauthPageTemplate is the consent page chrome. Product sentences come from
+// oauthPageTemplate is the consent page chrome. Product sentences, including
+// how to sign in outside hosted mode, come from
 // Text.OAuthConsent and are parsed with it: they are trusted static strings from
 // the application. {{.Name}} stays client-supplied and is escaped by html/template.
 const oauthPageTemplate = `<!doctype html>
@@ -15,11 +16,12 @@ const oauthPageTemplate = `<!doctype html>
 <script src="/oauth/app.js" defer></script></head><body data-connections="{{.Connections}}"{{if .SignInPath}} data-signin="{{.SignInPath}}"{{end}}>{{if .BrandHTML}}{{.BrandHTML}}{{else}}<p>{{.Product}}</p>{{end}}<h1>{{.Title}}</h1>
 {{if .Connections}}@@CONNECTIONS@@<ul id="connections"></ul><button id="reload">Refresh connections</button>
 {{else}}@@REQUEST@@<p>The app name is supplied by its developer. Check that you intended to connect it.</p><small>Registered callback: {{.Redirect}}</small><button id="approve">Allow access</button><button id="deny">Cancel</button>{{end}}
-<p id="message" role="status"></p>{{if .SignInPath}}<a id="signin" hidden>Log in</a>{{else}}<p>{{if .Hosted}}To sign in, <a href="/" target="_blank" rel="noopener">open the reader</a> and choose Log in with email, then return here.{{else}}If you are not signed in, open your fresh {{.Product}} reader sign-in link in another tab of this browser, then return here. Your setup agent can issue one with <code>open --public</code>. You can also <a href="/" target="_blank" rel="noopener">open the reader</a> and use your password if you set one.{{end}}</p>{{end}}<p><a href="{{.ManageHref}}">Manage connected apps</a></p></body></html>`
+<p id="message" role="status"></p>{{if .SignInPath}}<a id="signin" hidden>Log in</a>{{else}}<p>{{if .Hosted}}To sign in, <a href="/" target="_blank" rel="noopener">open the reader</a> and choose Log in with email, then return here.{{else}}@@SIGNIN@@{{end}}</p>{{end}}<p><a href="{{.ManageHref}}">Manage connected apps</a></p></body></html>`
 
 func newOAuthTemplate(consent OAuthConsentText) (*template.Template, error) {
 	source := strings.Replace(oauthPageTemplate, "@@CONNECTIONS@@", consent.ConnectionsHTML, 1)
 	source = strings.Replace(source, "@@REQUEST@@", consent.RequestHTML, 1)
+	source = strings.Replace(source, "@@SIGNIN@@", consent.SignInHTML, 1)
 	return template.New("oauth").Parse(source)
 }
 

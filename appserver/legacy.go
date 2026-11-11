@@ -12,7 +12,7 @@ import (
 )
 
 // DatabaseFormat identifies the storage contract independently of the executable
-// release. Format 1 is the single-user schema introduced in 0.11.0. Its existing
+// release. Format 1 is the single-account schema. Its existing
 // migration ledger identifies it; opening it does not add a format marker or
 // require a data migration. A future format must introduce a new migration so
 // releases that do not know it refuse the database before bootstrap.
@@ -43,22 +43,9 @@ func databaseMigrationCount(db string) (int, error) {
 	return count, err
 }
 
-// legacyMigrations are the schema migrations of releases before the
-// single-user schema. A database that recorded any of them, or that holds
-// tables only those releases created, is refused.
-var legacyMigrations = []string{
-	"1790300000_users.js",
-	"1790300100_knowledge.js",
-	"1790300200_google_jit.js",
-	"1790500000_search.js",
-	"1790700000_home.js",
-	"1791400000_properties.js",
-	"1791500000_spaces.js",
-	"1792700000_project_policy.js",
-	"1792700100_space_management.js",
-}
-
-var legacyTables = []string{"space_members", "user_directory", "project_policy"}
+// The schema migrations and tables of an application's earlier releases come
+// from Policy.Legacy: a database that recorded any of those migrations, or that
+// holds any of those tables, is refused. Core knows no application's history.
 
 // ErrEarlierRelease reports a database this release does not open.
 var ErrEarlierRelease = errors.New("unsupported database")
@@ -101,9 +88,14 @@ func (rt *Runtime) CheckDatabase(db, synced string) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	earlier := fmt.Errorf("%w: %s was created by an earlier %s release (multi-account spaces); this release does not open databases from earlier releases and leaves the file unchanged. "+
-		"%s", ErrEarlierRelease, synced, rt.cfg.Identity.DisplayName, rt.cfg.Text.LegacyRecreateHint)
-	for _, t := range legacyTables {
+	schema := rt.cfg.Policy.Legacy
+	description := ""
+	if schema.Description != "" {
+		description = " (" + schema.Description + ")"
+	}
+	earlier := fmt.Errorf("%w: %s was created by an earlier %s release%s; this release does not open databases from earlier releases and leaves the file unchanged. "+
+		"%s", ErrEarlierRelease, synced, rt.cfg.Identity.DisplayName, description, rt.cfg.Text.LegacyRecreateHint)
+	for _, t := range schema.Tables {
 		if tables[t] {
 			return earlier
 		}
@@ -128,7 +120,7 @@ func (rt *Runtime) CheckDatabase(db, synced string) error {
 		}
 	}
 	legacy := map[string]bool{}
-	for _, name := range legacyMigrations {
+	for _, name := range schema.Migrations {
 		legacy[name] = true
 	}
 	applied, err := conn.Query("SELECT file FROM _migrations")

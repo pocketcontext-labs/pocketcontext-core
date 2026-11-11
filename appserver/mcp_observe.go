@@ -10,7 +10,7 @@ import (
 )
 
 // oauthResponse records metadata without copying response bodies (which can
-// contain credentials or knowledge). Unwrap preserves ResponseController use.
+// contain credentials or application data). Unwrap preserves ResponseController use.
 type oauthResponse struct {
 	http.ResponseWriter
 	status          int
@@ -64,7 +64,7 @@ func oauthFailureReason(code, description string) string {
 		return "pkce_challenge"
 	case "state must not exceed 2048 bytes":
 		return "state_too_large"
-	case "only knowledge scope is supported", "Only knowledge scope is supported.":
+	case "scope is not supported", "Scope is not supported.":
 		return "invalid_scope"
 	case "Could not register client; try later or remove unused connections.":
 		return "registration_unavailable"

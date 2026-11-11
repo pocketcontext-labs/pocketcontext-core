@@ -48,6 +48,9 @@ func (rt *Runtime) NewTestServer(app core.App, opts TestServerOptions) (*TestSer
 	if opts.Domain == "" {
 		return nil, errors.New("test server needs a domain")
 	}
+	if opts.Hosted && !rt.cfg.Policy.Hosted.configured() {
+		return nil, errNoHostedMode
+	}
 	p := &Project{rt: rt, Cache: opts.Cache, Config: ProjectConfig{Port: rt.cfg.Identity.DefaultPort, Instance: "synthetic-test"}}
 	if opts.Hosted {
 		if err := configureHosted(rt, app, opts.Domain, opts.HostedConfig, false); err != nil {

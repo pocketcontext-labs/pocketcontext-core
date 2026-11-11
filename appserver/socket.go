@@ -105,7 +105,7 @@ func LocalHTTPClient(p *Project, timeout time.Duration) (*http.Client, error) {
 		return nil, err
 	}
 	if i.Key != p.Key || (p.Config.Instance != "" && i.Instance != p.Config.Instance) {
-		return nil, errors.New("TCP endpoint belongs to another knowledge base")
+		return nil, fmt.Errorf("TCP endpoint belongs to another %s database", p.rt.cfg.Identity.DisplayName)
 	}
 	if i.Socket != "" {
 		return nil, errors.New("server advertises a socket that is missing; restart it or use explicit TCP mode")

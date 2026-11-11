@@ -18,7 +18,7 @@ func AcquireTunnelLock(dir string) (func(), error) {
 	}
 	if err := lockFile(f); err != nil {
 		f.Close()
-		return nil, errors.New("a tunnel for this knowledge base is already running; stop it before serving or rotating its address")
+		return nil, errors.New("a tunnel for this project is already running; stop it before serving or rotating its address")
 	}
 	return func() { _ = f.Close() }, nil
 }

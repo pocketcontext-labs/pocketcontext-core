@@ -106,6 +106,7 @@ func publicHandlerMode(rt *Runtime, app core.App, domain string, next http.Handl
 func publicHandlerModeWithUIDev(rt *Runtime, app core.App, domain string, next http.Handler, hosted, uiDev bool, oauth ...*mcpOAuth) http.Handler {
 	route := rt.cfg.Policy.PublicRoute(app)
 	keyHeader := rt.cfg.Identity.LocalKeyHeader
+	bodyLimit := rt.cfg.Policy.PublicBodyLimit
 	var mcp *mcpOAuth
 	if len(oauth) > 0 {
 		mcp = oauth[0]
@@ -174,7 +175,7 @@ func publicHandlerModeWithUIDev(rt *Runtime, app core.App, domain string, next h
 			}
 			r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
 		} else {
-			r.Body = http.MaxBytesReader(w, r.Body, 110<<20)
+			r.Body = http.MaxBytesReader(w, r.Body, bodyLimit)
 		}
 		// Native serving terminates TLS itself; hosted mode has a fixed HTTPS
 		// origin at its upstream proxy. Forwarded headers are never authority

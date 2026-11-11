@@ -20,6 +20,10 @@ import (
 	"golang.org/x/time/rate"
 )
 
+// errNoHostedMode refuses hosted serving for an application that set no
+// Policy.Hosted budget; core has no budget of its own to fall back on.
+var errNoHostedMode = errors.New("hosted mode is not configured for this application")
+
 // HostedConfig is process-local deployment configuration, never synced project data.
 type HostedConfig struct {
 	OwnerEmail string
@@ -62,6 +66,9 @@ func (rt *Runtime) HostedConfigFromEnv() (*HostedConfig, error) {
 // configureHosted runs after migrations and before accepting traffic. Credentials
 // only modify the in-memory settings; Save(settings) would leak them into the project.
 func configureHosted(rt *Runtime, app core.App, domain string, c *HostedConfig, initialize bool) error {
+	if !rt.cfg.Policy.Hosted.configured() {
+		return errNoHostedMode
+	}
 	text := rt.cfg.Text
 	users, err := app.FindCollectionByNameOrId("users")
 	if err != nil {
@@ -90,7 +97,7 @@ func configureHosted(rt *Runtime, app core.App, domain string, c *HostedConfig, 
 	users.OTP.Enabled = true
 	users.OTP.Duration = 900
 	users.OTP.Length = 32
-	users.OTP.EmailTemplate = core.EmailTemplate{Subject: text.OTPSubject, Body: `<p>You requested a login link for ` + html.EscapeString(text.OTPSenderName) + `.</p><p><a href="https://` + domain + `/#/login?otpId={OTP_ID}&amp;otp={OTP}">` + html.EscapeString(text.OTPSubject) + `</a></p><p>This link expires in 15 minutes. Open it and confirm Log in. If you did not request it, ignore this email.</p>`}
+	users.OTP.EmailTemplate = core.EmailTemplate{Subject: text.OTPSubject, Body: `<p>You requested a login link for ` + html.EscapeString(text.OTPSenderName) + `.</p><p><a href="https://` + domain + html.EscapeString(text.OTPLoginPath) + `?otpId={OTP_ID}&amp;otp={OTP}">` + html.EscapeString(text.OTPSubject) + `</a></p><p>This link expires in 15 minutes. Open it and confirm Log in. If you did not request it, ignore this email.</p>`}
 	if err = app.Save(users); err != nil {
 		return err
 	}

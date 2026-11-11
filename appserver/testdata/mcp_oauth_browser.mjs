@@ -28,7 +28,7 @@ try{
  const registered=await call('/oauth/register',{client_name:'Synthetic <script>bad()</script> client',redirect_uris:['https://first.example.com/callback','https://client.example.com/callback'],token_endpoint_auth_method:'none'});
  assert.equal(registered.status,201);
  const verifier=randomBytes(32).toString('base64url');const client=registered.data.client_id;
- const params=new URLSearchParams({client_id:client,redirect_uri:'https://client.example.com/callback',response_type:'code',code_challenge_method:'S256',code_challenge:createHash('sha256').update(verifier).digest('base64url'),resource:origin+'/mcp',scope:'knowledge',state:'synthetic-state'});
+ const params=new URLSearchParams({client_id:client,redirect_uri:'https://client.example.com/callback',response_type:'code',code_challenge_method:'S256',code_challenge:createHash('sha256').update(verifier).digest('base64url'),resource:origin+'/mcp',scope:'fixture.read',state:'synthetic-state'});
  const consent=await context.newPage();consent.on('pageerror',e=>problems.push(e.message));
  await consent.goto(origin+'/oauth/authorize?'+params);
  await consent.getByText('Registered callback: https://client.example.com/callback',{exact:true}).waitFor();
@@ -56,7 +56,7 @@ try{
   const registeredNative=await call('/oauth/register',{client_name:'Synthetic native client',redirect_uris:[redirect],token_endpoint_auth_method:'none'});
   assert.equal(registeredNative.status,201);
   const nativeVerifier=randomBytes(32).toString('base64url');
-  const nativeParams=new URLSearchParams({client_id:registeredNative.data.client_id,redirect_uri:redirect,response_type:'code',code_challenge_method:'S256',code_challenge:createHash('sha256').update(nativeVerifier).digest('base64url'),scope:'knowledge',state:'native-state'});
+  const nativeParams=new URLSearchParams({client_id:registeredNative.data.client_id,redirect_uri:redirect,response_type:'code',code_challenge_method:'S256',code_challenge:createHash('sha256').update(nativeVerifier).digest('base64url'),scope:'fixture.read',state:'native-state'});
   const native=await context.newPage();native.on('pageerror',e=>problems.push(e.message));
   await native.goto(origin+'/oauth/authorize?'+nativeParams);
   await native.getByText('Registered callback: '+redirect,{exact:true}).waitFor();

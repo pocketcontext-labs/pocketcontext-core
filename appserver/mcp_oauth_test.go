@@ -70,7 +70,7 @@ func (f *oauthFixture) registration() string {
 }
 func (f *oauthFixture) authorization(client, verifier string) url.Values {
 	h := sha256.Sum256([]byte(verifier))
-	return url.Values{"client_id": {client}, "redirect_uri": {"https://client.example.com/callback"}, "response_type": {"code"}, "code_challenge_method": {"S256"}, "code_challenge": {base64.RawURLEncoding.EncodeToString(h[:])}, "resource": {f.o.resource()}, "scope": {"knowledge"}, "state": {"synthetic-state"}}
+	return url.Values{"client_id": {client}, "redirect_uri": {"https://client.example.com/callback"}, "response_type": {"code"}, "code_challenge_method": {"S256"}, "code_challenge": {base64.RawURLEncoding.EncodeToString(h[:])}, "resource": {f.o.resource()}, "scope": {"fixture.read"}, "state": {"synthetic-state"}}
 }
 func (f *oauthFixture) code(client, verifier string) string {
 	q := f.authorization(client, verifier)
@@ -649,7 +649,7 @@ func TestMCPOAuthAuthorizationErrors(t *testing.T) {
 		{"code_challenge_method", "plain", "code_challenge_method must be S256"},
 		{"code_challenge", "invalid", "code_challenge must be a 43-character base64url-encoded SHA-256 hash"},
 		{"state", strings.Repeat("s", 2049), "state must not exceed 2048 bytes"},
-		{"scope", "admin", "only knowledge scope is supported"},
+		{"scope", "admin", "scope is not supported"},
 	} {
 		t.Run(tc.key, func(t *testing.T) {
 			q := f.authorization(client, strings.Repeat("r", 64))

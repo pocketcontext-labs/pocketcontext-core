@@ -366,10 +366,7 @@ func (l *localRoutes) register(e *core.ServeEvent) error {
 		if err := l.requireKey(re); err != nil {
 			return err
 		}
-		l.store.mu.Lock()
-		err := l.store.writeBack()
-		l.store.mu.Unlock()
-		if err != nil {
+		if err := l.store.writeBack(); err != nil {
 			return re.InternalServerError("Write-back failed: "+err.Error(), nil)
 		}
 		return re.JSON(http.StatusOK, map[string]string{"db": l.p.DB})

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func testProject(t *testing.T) *Project {
@@ -150,5 +151,114 @@ func TestResolveDirectory(t *testing.T) {
 	}
 	if p.DB != filepath.Join(dir, testRT.cfg.Identity.DatabaseFile) || p.Config.Port != testRT.cfg.Identity.DefaultPort {
 		t.Fatalf("resolved %+v", p)
+	}
+}
+
+// Steady writes never leave a quiet moment; the synced file is still refreshed
+// once the oldest unsaved change has waited MaxWriteBackDelay.
+func TestFlushHasMaximumDelayUnderSteadyWrites(t *testing.T) {
+	p := testProject(t)
+	now := time.Unix(1_800_000_000, 0)
+	s := &Store{p: p, now: func() time.Time { return now }}
+	if err := s.Open(); err != nil {
+		t.Fatal(err)
+	}
+	execLive(t, s, "CREATE TABLE notes(x)")
+	s.Changed()
+	if err := s.Flush(0); err != nil {
+		t.Fatal(err)
+	}
+	// One change a second for just under the maximum delay: never quiet for 3s.
+	for i := 0; i < int(MaxWriteBackDelay/time.Second)-1; i++ {
+		execLive(t, s, "INSERT INTO notes VALUES (1)")
+		s.Changed()
+		now = now.Add(time.Second)
+		if err := s.Flush(3 * time.Second); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := count(t, p.DB, "notes"); n != 0 {
+		t.Fatalf("written back before the maximum delay (%d rows)", n)
+	}
+	execLive(t, s, "INSERT INTO notes VALUES (1)")
+	s.Changed()
+	now = now.Add(time.Second)
+	if err := s.Flush(3 * time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if n := count(t, p.DB, "notes"); n != int(MaxWriteBackDelay/time.Second) {
+		t.Fatalf("steady writes were not written back at the maximum delay (%d rows)", n)
+	}
+	// The delay restarts from the write-back, not from the first change ever.
+	execLive(t, s, "INSERT INTO notes VALUES (2)")
+	s.Changed()
+	now = now.Add(time.Second)
+	if err := s.Flush(3 * time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if n := count(t, p.DB, "notes"); n != int(MaxWriteBackDelay/time.Second) {
+		t.Fatalf("written back again without a quiet moment (%d rows)", n)
+	}
+	now = now.Add(3 * time.Second)
+	if err := s.Flush(3 * time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if n := count(t, p.DB, "notes"); n != int(MaxWriteBackDelay/time.Second)+1 {
+		t.Fatalf("quiet changes were not written back (%d rows)", n)
+	}
+}
+
+// Recording a change must not wait for a running snapshot, and a change made
+// during one stays unsaved until the next write-back.
+func TestChangedDoesNotWaitForWriteBack(t *testing.T) {
+	p := testProject(t)
+	s := &Store{p: p}
+	if err := s.Open(); err != nil {
+		t.Fatal(err)
+	}
+	execLive(t, s, "CREATE TABLE notes(x)")
+	s.Changed()
+	s.writing.Lock() // a write-back is in progress
+	done := make(chan struct{})
+	go func() { s.Changed(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Changed waited for the write-back")
+	}
+	s.writing.Unlock()
+	if err := s.Flush(0); err != nil {
+		t.Fatal(err)
+	}
+	if s.changes != s.saved || s.state.Dirty {
+		t.Fatalf("changes=%d saved=%d dirty=%v", s.changes, s.saved, s.state.Dirty)
+	}
+}
+
+// A dirty flag that could not be persisted is retried on the next change
+// instead of being trusted as recorded.
+func TestChangedRetriesUnsavedDirtyFlag(t *testing.T) {
+	p := testProject(t)
+	s := &Store{p: p}
+	if err := s.Open(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(p.LiveDir()); err != nil {
+		t.Fatal(err)
+	}
+	s.Changed()
+	if !s.dirtyUnsaved {
+		t.Fatal("the failed state write was not noticed")
+	}
+	if err := os.MkdirAll(p.LiveDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	s.Changed()
+	if s.dirtyUnsaved {
+		t.Fatal("the dirty flag was not retried")
+	}
+	reopened := &Store{p: p}
+	if err := reopened.loadState(); err != nil || !reopened.state.Dirty {
+		t.Fatalf("dirty flag not on disk: %+v %v", reopened.state, err)
 	}
 }

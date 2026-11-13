@@ -45,7 +45,7 @@ func TestPublicHTTPSReaderAndBoundary(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(readerDir, "index.html"), []byte("<!doctype html><title>Synthetic reader</title>"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	registerReader(&core.ServeEvent{App: a.app, Router: router}, readerDir)
+	registerReader(&core.ServeEvent{App: a.app, Router: router}, readerDir, false)
 	if err := a.app.OnServe().Trigger(&core.ServeEvent{App: a.app, Router: router}); err != nil {
 		t.Fatal(err)
 	}

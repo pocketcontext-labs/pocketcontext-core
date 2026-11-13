@@ -31,7 +31,7 @@ func TestMCPOAuthBrowser(t *testing.T) {
 	}
 	local := &localRoutes{p: p, publicURL: "https://knowledge.example.com", mcp: true}
 	local.register(&core.ServeEvent{App: a.app, Router: router})
-	registerReader(&core.ServeEvent{App: a.app, Router: router}, filepath.Join(testAssetsDir(), "ui", "dist"))
+	registerReader(&core.ServeEvent{App: a.app, Router: router}, filepath.Join(testAssetsDir(), "ui", "dist"), false)
 	if err := a.app.OnServe().Trigger(&core.ServeEvent{App: a.app, Router: router}); err != nil {
 		t.Fatal(err)
 	}

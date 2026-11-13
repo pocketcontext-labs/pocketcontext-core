@@ -13,9 +13,19 @@ var readerAssetName = regexp.MustCompile(`^[A-Za-z0-9_-]+\.(js|css|woff2|svg)$`)
 // public route policies call it so they admit exactly the assets the reader serves.
 func ReaderAssetName(name string) bool { return readerAssetName.MatchString(name) }
 
+// readerFrameSrc is the reader CSP's frame-src directive: none unless the
+// application opts into same-origin frames (Policy.ReaderFramesSelf).
+func readerFrameSrc(framesSelf bool) string {
+	if framesSelf {
+		return "frame-src 'self'; "
+	}
+	return ""
+}
+
 // registerReader keeps embedded reader routes narrow. Development mode selects
 // its own routes instead; the immutable unpacked application cache is untouched.
-func registerReader(e *core.ServeEvent, dir string) {
+func registerReader(e *core.ServeEvent, dir string, framesSelf bool) {
+	csp := "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' blob:; media-src 'self' blob:; font-src 'self'; " + readerFrameSrc(framesSelf) + "frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
 	serve := func(re *core.RequestEvent, file string) error {
 		h := re.Response.Header()
 		if file == "index.html" {
@@ -26,7 +36,7 @@ func registerReader(e *core.ServeEvent, dir string) {
 		h.Set("Referrer-Policy", "no-referrer")
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
-		h.Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' blob:; media-src 'self' blob:; font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+		h.Set("Content-Security-Policy", csp)
 		return re.FileFS(os.DirFS(dir), file)
 	}
 	e.Router.GET("/{$}", func(re *core.RequestEvent) error { return serve(re, "index.html") })

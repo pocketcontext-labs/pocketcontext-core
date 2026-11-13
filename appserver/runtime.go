@@ -52,6 +52,10 @@ type Policy struct {
 	Hosted            HostedBudget                 // zero means the application has no hosted mode
 	HostedRequestCost func(*core.RequestEvent) int // nil means every request costs 1
 	AllowPublicUIDev  bool                         // only an application that uses it sets this
+	// ReaderFramesSelf lets the reader page embed same-origin frames
+	// (frame-src 'self'), for example a sandboxed file preview the application
+	// serves with its own CSP. Off, the reader embeds no frames at all.
+	ReaderFramesSelf bool // only an application that uses it sets this
 }
 
 // LegacySchema names what identifies a database of an earlier release that

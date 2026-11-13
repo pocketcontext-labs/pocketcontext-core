@@ -288,7 +288,7 @@ func TestEmbeddedReaderKeepsProductionPolicy(t *testing.T) {
 	r := router.NewRouter(func(w http.ResponseWriter, r *http.Request) (*core.RequestEvent, router.EventCleanupFunc) {
 		return &core.RequestEvent{Event: router.Event{Response: w, Request: r}}, nil
 	})
-	registerReader(&core.ServeEvent{Router: r}, dir)
+	registerReader(&core.ServeEvent{Router: r}, dir, false)
 	handler, err := r.BuildMux()
 	if err != nil {
 		t.Fatal(err)
@@ -320,5 +320,29 @@ func TestEmbeddedReaderKeepsProductionPolicy(t *testing.T) {
 		if test.status == 200 && (!strings.Contains(csp, "script-src 'self';") || rr.Header().Get("X-Frame-Options") != "DENY") {
 			t.Errorf("missing production protections: %v", rr.Header())
 		}
+		if strings.Contains(csp, "frame-src") {
+			t.Errorf("reader allows frames without opting in: %s", csp)
+		}
+	}
+}
+
+func TestEmbeddedReaderFramesSelfOptIn(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<html>synthetic reader</html>"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	r := router.NewRouter(func(w http.ResponseWriter, r *http.Request) (*core.RequestEvent, router.EventCleanupFunc) {
+		return &core.RequestEvent{Event: router.Event{Response: w, Request: r}}, nil
+	})
+	registerReader(&core.ServeEvent{Router: r}, dir, true)
+	handler, err := r.BuildMux()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8096/", nil))
+	csp := rr.Header().Get("Content-Security-Policy")
+	if rr.Code != 200 || !strings.Contains(csp, "frame-src 'self'; frame-ancestors 'none';") || !strings.Contains(csp, "default-src 'none';") || rr.Header().Get("X-Frame-Options") != "DENY" {
+		t.Errorf("framesSelf reader policy = %d %s %v", rr.Code, csp, rr.Header())
 	}
 }

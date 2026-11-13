@@ -390,7 +390,7 @@ func ServeContext(parent context.Context, p *Project, opts ServeOptions) (result
 		if devUI != nil {
 			devUI.register(e)
 		} else {
-			registerReader(e, filepath.Join(appDir, "ui", "dist"))
+			registerReader(e, filepath.Join(appDir, "ui", "dist"), p.rt.cfg.Policy.ReaderFramesSelf)
 		}
 		if err := e.Next(); err != nil {
 			return err

@@ -67,7 +67,7 @@ func (rt *Runtime) NewTestServer(app core.App, opts TestServerOptions) (*TestSer
 		return nil, err
 	}
 	if opts.ReaderDir != "" {
-		registerReader(event, opts.ReaderDir)
+		registerReader(event, opts.ReaderDir, p.rt.cfg.Policy.ReaderFramesSelf)
 	}
 	if err := app.OnServe().Trigger(event); err != nil {
 		return nil, err

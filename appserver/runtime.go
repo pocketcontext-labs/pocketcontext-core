@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"net/url"
 	"strings"
+	"time"
 
 	"ganigeorgiev.com/pocketbase/pocketbase/core"
 	"github.com/dop251/goja"
@@ -51,7 +52,10 @@ type Policy struct {
 	Legacy            LegacySchema                 // required; explicit empty lists are allowed
 	Hosted            HostedBudget                 // zero means the application has no hosted mode
 	HostedRequestCost func(*core.RequestEvent) int // nil means every request costs 1
-	AllowPublicUIDev  bool                         // only an application that uses it sets this
+	// HostedSession is how long a hosted sign-in lasts; the reader renews it
+	// while in use. Zero keeps the users collection's own token duration.
+	HostedSession    time.Duration
+	AllowPublicUIDev bool // only an application that uses it sets this
 	// ReaderFramesSelf lets the reader page embed same-origin frames
 	// (frame-src 'self'), for example a sandboxed file preview the application
 	// serves with its own CSP. Off, the reader embeds no frames at all.
@@ -145,6 +149,11 @@ type Text struct {
 	// links to. Core appends "?otpId=...&otp=...", so the path has no query; a
 	// fragment route such as "/#/login" is allowed.
 	OTPLoginPath string
+	// OTPCodeEmail, when set, renders the hosted sign-in email: subject, HTML
+	// and plain-text bodies showing a six-digit code (for installed web apps,
+	// which cannot use the link) and the browser link. It enables
+	// OTPCodePath. Nil keeps the link-only email.
+	OTPCodeEmail func(OTPCodeEmail) (subject, html, plain string)
 }
 
 // OAuthConsentText is trusted static copy from the application, used as template

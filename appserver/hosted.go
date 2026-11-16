@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"ganigeorgiev.com/pocketbase/pocketbase/core"
@@ -94,8 +93,11 @@ func configureHosted(rt *Runtime, app core.App, domain string, c *HostedConfig, 
 		return errors.New("hosted owner does not match the existing account; owner changes require explicit maintenance")
 	}
 	users.PasswordAuth.Enabled = false
+	if d := rt.cfg.Policy.HostedSession; d > 0 {
+		users.AuthToken.Duration = int64(d / time.Second)
+	}
 	users.OTP.Enabled = true
-	users.OTP.Duration = 900
+	users.OTP.Duration = int64(hostedOTPDuration / time.Second)
 	users.OTP.Length = 32
 	users.OTP.EmailTemplate = core.EmailTemplate{Subject: text.OTPSubject, Body: `<p>You requested a login link for ` + html.EscapeString(text.OTPSenderName) + `.</p><p><a href="https://` + domain + html.EscapeString(text.OTPLoginPath) + `?otpId={OTP_ID}&amp;otp={OTP}">` + html.EscapeString(text.OTPSubject) + `</a></p><p>This link expires in 15 minutes. Open it and confirm Log in. If you did not request it, ignore this email.</p>`}
 	if err = app.Save(users); err != nil {
@@ -111,7 +113,7 @@ func configureHosted(rt *Runtime, app core.App, domain string, c *HostedConfig, 
 		}
 		return e.Next()
 	}})
-	var redemption sync.Mutex
+	redemption := &hostedOTPCodesFor(app).redeem
 	app.OnRecordAuthWithOTPRequest("users").Bind(&hook.Handler[*core.RecordAuthWithOTPRequestEvent]{Id: "hostedSingleUseOTP", Func: func(e *core.RecordAuthWithOTPRequestEvent) error {
 		redemption.Lock()
 		defer redemption.Unlock()
@@ -124,6 +126,7 @@ func configureHosted(rt *Runtime, app core.App, domain string, c *HostedConfig, 
 		}
 		return e.Next()
 	}})
+	bindHostedOTPCode(rt, app, domain)
 	settings := app.Settings()
 	settings.SMTP = c.SMTP
 	settings.Meta.AppURL = "https://" + domain

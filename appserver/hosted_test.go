@@ -25,6 +25,11 @@ func syntheticHostedConfig() *HostedConfig {
 
 func hostedTestApp(t *testing.T) (*testApp, http.Handler) {
 	t.Helper()
+	return hostedTestAppRT(t, testRT)
+}
+
+func hostedTestAppRT(t *testing.T, testRT *Runtime) (*testApp, http.Handler) {
+	t.Helper()
 	a := newTestApp(t)
 	a.user.SetEmail("owner@example.test")
 	if err := a.app.Save(a.user); err != nil {

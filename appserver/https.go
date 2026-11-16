@@ -138,7 +138,7 @@ func publicHandlerModeWithUIDev(rt *Runtime, app core.App, domain string, next h
 			return
 		}
 		isOAuth := mcp != nil && oauthRoute(r.Method, r.URL.Path)
-		isOTP := hosted && r.Method == http.MethodPost && (r.URL.Path == "/api/collections/users/request-otp" || r.URL.Path == "/api/collections/users/auth-with-otp")
+		isOTP := hosted && r.Method == http.MethodPost && (r.URL.Path == "/api/collections/users/request-otp" || r.URL.Path == "/api/collections/users/auth-with-otp" || r.URL.Path == OTPCodePath)
 		if hosted && (r.URL.Path == "/api/collections/users/auth-with-password" || r.URL.Path == "/api/bundle/redeem" || strings.HasPrefix(r.URL.Path, "/bundle/login")) {
 			http.NotFound(w, r)
 			return
@@ -154,12 +154,17 @@ func publicHandlerModeWithUIDev(rt *Runtime, app core.App, domain string, next h
 			w.Header().Set("Cache-Control", "no-store")
 			selectedLimiter := emailLimiter
 			limitName := "email_request"
-			if r.URL.Path == "/api/collections/users/auth-with-otp" {
+			if r.URL.Path == "/api/collections/users/auth-with-otp" || r.URL.Path == OTPCodePath {
 				selectedLimiter = redemptionLimiter
 				limitName = "email_redemption"
 			}
 			if !selectedLimiter.Allow() {
 				writeRateLimit(app, w, r, rateLimitInfo{limitName, 6, 10, 0, 60}, "Too many requests. Please try again shortly.")
+				return
+			}
+			// Codes are short, so each address also gets its own budget.
+			if r.URL.Path == OTPCodePath && !limiter.allow(r.RemoteAddr) {
+				writeRateLimit(app, w, r, limiter.rejection(r.RemoteAddr, "public_auth"), "Too many sign-in attempts. Try again shortly.")
 				return
 			}
 			r.Body = http.MaxBytesReader(w, r.Body, 16<<10)

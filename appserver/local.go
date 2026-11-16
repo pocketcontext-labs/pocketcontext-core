@@ -149,6 +149,7 @@ func (l *localRoutes) register(e *core.ServeEvent) error {
 	id := rt.cfg.Identity
 	if l.hosted {
 		registerHostedRateLimitsClock(e, rt, l.now)
+		registerHostedOTPCodeRoute(e, rt)
 	}
 	// DNS rebinding protection: a web page cannot reach this server under another name.
 	e.Router.Bind(&hook.Handler[*core.RequestEvent]{

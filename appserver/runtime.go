@@ -37,10 +37,26 @@ type Config struct {
 // It runs after core's fixed checks (exact Host/Origin, /up, path canonicalization).
 type PublicRouteFactory func(app core.App) func(method, path string) bool
 
+// AccountMode says how many accounts a hosted instance has. There is no
+// default: the zero value is a configuration error.
+type AccountMode int
+
+const (
+	// AccountsSingle keeps exactly one account in every mode: the local
+	// password account, or the hosted OWNER_EMAIL account.
+	AccountsSingle AccountMode = iota + 1
+	// AccountsMulti lets a hosted instance hold other accounts beside the
+	// OWNER_EMAIL account, each signing in by email. Local and tunnel modes
+	// still have exactly one local account. It requires Policy.Hosted.
+	AccountsMulti
+)
+
 // Policy holds the application's public routes, maintenance reads, wire values
 // and limits.
 type Policy struct {
 	PublicRoute PublicRouteFactory // required; the only public allowlist
+	// Accounts is AccountsSingle or AccountsMulti; required.
+	Accounts    AccountMode
 	Maintenance maintenance.Policy // required; explicit empty sets are allowed
 	Observe     mcpobserve.Policy  // required; explicit empty lists are allowed
 	// OAuthScope is the one scope of the application's MCP endpoint. Connected
@@ -85,6 +101,15 @@ type HostedBudget struct {
 func (b HostedBudget) configured() bool { return b != HostedBudget{} }
 
 func (p Policy) validate() error {
+	switch p.Accounts {
+	case AccountsSingle:
+	case AccountsMulti:
+		if !p.Hosted.configured() {
+			return errors.New("Policy.Accounts AccountsMulti needs Policy.Hosted")
+		}
+	default:
+		return errors.New("Policy.Accounts must be AccountsSingle or AccountsMulti")
+	}
 	if p.OAuthScope == "" || len(p.OAuthScope) > 64 {
 		return errors.New("Policy.OAuthScope is required and at most 64 bytes")
 	}
@@ -127,6 +152,14 @@ type Hooks struct {
 	Background         func(ctx context.Context, app core.App)                 // after a successful OnServe; cancelled and awaited before the app closes
 	OnHostedRestore    func(app core.App) error                                // first in restoring a hosted instance
 	Bindings           func(vm *goja.Runtime) map[string]any                   // merged into HookGlobal; cannot replace sha256
+	// AllowSignIn decides whether a hosted sign-in request for an address
+	// without an account creates one (Policy.Accounts AccountsMulti only; New
+	// refuses it with AccountsSingle). email is the canonical address
+	// (trimmed, lower-cased printable ASCII). It runs after the sign-in rate
+	// limits and the resend cooldown, for existing accounts too (whose answer
+	// is ignored). Nil, false or an error creates nothing, and the response is
+	// the same in every case.
+	AllowSignIn func(app core.App, email string) (bool, error)
 }
 
 // RegisterContext is the state available to Hooks.Register.
@@ -138,7 +171,7 @@ type RegisterContext struct {
 
 // Text is product copy shown to people. New requires every field.
 type Text struct {
-	AccountName        string // the account's name at creation
+	AccountName        string // an account's name at creation
 	LegacyRecreateHint string // final sentence of the earlier-release error
 	OAuthResourceName  string
 	OAuthConsent       OAuthConsentText
@@ -280,6 +313,9 @@ func New(cfg Config) (*Runtime, error) {
 	}
 	if err := validateOAuthAppPath(cfg.Text.OTPLoginPath); err != nil || strings.Contains(cfg.Text.OTPLoginPath, "?") {
 		return nil, errors.New("appserver: Text.OTPLoginPath must be a same-origin absolute path without a query")
+	}
+	if cfg.Hooks.AllowSignIn != nil && cfg.Policy.Accounts != AccountsMulti {
+		return nil, errors.New("appserver: Hooks.AllowSignIn needs Policy.Accounts AccountsMulti")
 	}
 	if cfg.Hooks.Bindings != nil {
 		if _, collides := cfg.Hooks.Bindings(goja.New())["sha256"]; collides {

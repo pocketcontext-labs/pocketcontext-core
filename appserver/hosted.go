@@ -73,25 +73,30 @@ func configureHosted(rt *Runtime, app core.App, domain string, c *HostedConfig, 
 	if err != nil {
 		return err
 	}
-	records, err := app.FindRecordsByFilter("users", "", "", 2, 0)
-	if err != nil {
-		return err
-	}
-	if initialize {
-		if len(records) != 0 {
+	multi := rt.cfg.Policy.Accounts == AccountsMulti
+	owner := c.OwnerEmail
+	if multi {
+		if err := ensureMultiOwner(rt, app, users, c.OwnerEmail, initialize); err != nil {
+			return err
+		}
+		owner, _ = canonicalEmail(c.OwnerEmail)
+	} else {
+		records, err := app.FindRecordsByFilter("users", "", "", 2, 0)
+		if err != nil {
+			return err
+		}
+		switch {
+		case initialize && len(records) != 0:
 			return errors.New("hosted initialization refuses an existing account")
+		case initialize:
+			if err = app.Save(newHostedAccount(users, c.OwnerEmail, text.AccountName)); err != nil {
+				return fmt.Errorf("initialize hosted account: %w", err)
+			}
+		case len(records) != 1 || records[0].Email() != c.OwnerEmail:
+			return errors.New("hosted owner does not match the existing account; owner changes require explicit maintenance")
 		}
-		user := core.NewRecord(users)
-		user.SetEmail(c.OwnerEmail)
-		user.SetRandomPassword()
-		user.SetVerified(false)
-		user.Set("name", text.AccountName)
-		if err = app.Save(user); err != nil {
-			return fmt.Errorf("initialize hosted account: %w", err)
-		}
-	} else if len(records) != 1 || records[0].Email() != c.OwnerEmail {
-		return errors.New("hosted owner does not match the existing account; owner changes require explicit maintenance")
 	}
+	app.Store().Set(hostedOwnerStoreKey, lowerASCII(owner))
 	users.PasswordAuth.Enabled = false
 	if d := rt.cfg.Policy.HostedSession; d > 0 {
 		users.AuthToken.Duration = int64(d / time.Second)
@@ -106,13 +111,17 @@ func configureHosted(rt *Runtime, app core.App, domain string, c *HostedConfig, 
 	// PocketBase 0.41.1 logs a failed OTP deletion and otherwise continues.
 	// Fail closed before issuing credentials and recheck after acquiring the lock
 	// so simultaneous requests cannot redeem the same validated OTP twice.
-	sendCooldown := rate.NewLimiter(rate.Every(time.Minute), 1)
-	app.OnRecordRequestOTPRequest("users").Bind(&hook.Handler[*core.RecordCreateOTPRequestEvent]{Id: "hostedEmailCooldown", Func: func(e *core.RecordCreateOTPRequestEvent) error {
-		if e.Record != nil && !sendCooldown.Allow() {
-			return e.JSON(http.StatusOK, map[string]string{"otpId": core.GenerateDefaultRandomId()})
-		}
-		return e.Next()
-	}})
+	if multi {
+		bindHostedSignIn(rt, app, owner)
+	} else {
+		sendCooldown := rate.NewLimiter(rate.Every(time.Minute), 1)
+		app.OnRecordRequestOTPRequest("users").Bind(&hook.Handler[*core.RecordCreateOTPRequestEvent]{Id: "hostedEmailCooldown", Func: func(e *core.RecordCreateOTPRequestEvent) error {
+			if e.Record != nil && !sendCooldown.Allow() {
+				return e.JSON(http.StatusOK, map[string]string{"otpId": core.GenerateDefaultRandomId()})
+			}
+			return e.Next()
+		}})
+	}
 	redemption := &hostedOTPCodesFor(app).redeem
 	app.OnRecordAuthWithOTPRequest("users").Bind(&hook.Handler[*core.RecordAuthWithOTPRequestEvent]{Id: "hostedSingleUseOTP", Func: func(e *core.RecordAuthWithOTPRequestEvent) error {
 		redemption.Lock()
@@ -124,6 +133,14 @@ func configureHosted(rt *Runtime, app core.App, domain string, c *HostedConfig, 
 		if err = e.App.Delete(fresh); err != nil {
 			return e.InternalServerError("Could not complete login. Please try again.", nil)
 		}
+		// With AccountsMulti, verified means signed in at least once, which
+		// keeps the account from pruning; fail closed if it cannot be recorded.
+		if multi && !e.Record.Verified() {
+			e.Record.SetVerified(true)
+			if err = e.App.Save(e.Record); err != nil {
+				return e.InternalServerError("Could not complete login. Please try again.", nil)
+			}
+		}
 		return e.Next()
 	}})
 	bindHostedOTPCode(rt, app, domain)
@@ -133,7 +150,69 @@ func configureHosted(rt *Runtime, app core.App, domain string, c *HostedConfig, 
 	settings.Meta.SenderName = text.OTPSenderName
 	settings.Meta.SenderAddress = c.From
 	configureHostedRateLimits(app)
+	// The public handler alone decides the client address (HostedProxy). A
+	// stored trusted-proxy setting must never make PocketBase read a header.
+	settings.TrustedProxy = core.TrustedProxyConfig{}
+	app.OnSettingsReload().Bind(&hook.Handler[*core.SettingsReloadEvent]{Id: "hostedNoTrustedProxy", Func: func(e *core.SettingsReloadEvent) error {
+		err := e.Next()
+		e.App.Settings().TrustedProxy = core.TrustedProxyConfig{}
+		return err
+	}})
 	return nil
+}
+
+// ensureMultiOwner checks the accounts of an AccountsMulti database before
+// hosted serving. The owner is found by its canonical address and created only
+// by initialization or in a database with no accounts. A database holding the
+// local account, or other accounts without the owner, is refused: it is a local
+// database or its owner changed, and both need explicit maintenance.
+func ensureMultiOwner(rt *Runtime, app core.App, users *core.Collection, ownerEmail string, initialize bool) error {
+	owner, ok := canonicalEmail(ownerEmail)
+	if !ok {
+		return errors.New("hosted OWNER_EMAIL must be a plain ASCII address")
+	}
+	if owner == lowerASCII(rt.cfg.Identity.LocalAccountEmail) {
+		return errors.New("hosted OWNER_EMAIL must not be the local account address")
+	}
+	total, err := app.CountRecords(users)
+	if err != nil {
+		return err
+	}
+	if initialize && total != 0 {
+		return errors.New("hosted initialization refuses an existing account")
+	}
+	if total == 0 {
+		if err := app.Save(newHostedAccount(users, owner, rt.cfg.Text.AccountName)); err != nil {
+			return fmt.Errorf("initialize hosted account: %w", err)
+		}
+		return nil
+	}
+	local, err := findAccountsByEmail(app, lowerASCII(rt.cfg.Identity.LocalAccountEmail))
+	if err != nil {
+		return err
+	}
+	if len(local) != 0 {
+		return errors.New("this database holds the local account; hosted serving of a local project requires explicit maintenance")
+	}
+	found, err := findAccountsByEmail(app, owner)
+	if err != nil {
+		return err
+	}
+	if len(found) != 1 {
+		return errors.New("hosted owner does not match the existing accounts; owner changes require explicit maintenance")
+	}
+	return nil
+}
+
+// newHostedAccount is a hosted account as core creates it: a random password
+// (password sign-in is off), not verified until its first email sign-in.
+func newHostedAccount(users *core.Collection, email, name string) *core.Record {
+	user := core.NewRecord(users)
+	user.SetEmail(email)
+	user.SetRandomPassword()
+	user.SetVerified(false)
+	user.Set("name", name)
+	return user
 }
 
 func startHostedHTTP(ctx context.Context, app core.App, p *Project, opts ServeOptions, handler http.Handler, failures chan<- error) (*publicServers, error) {
@@ -143,14 +222,18 @@ func startHostedHTTP(ctx context.Context, app core.App, p *Project, opts ServeOp
 	}
 	oauth.hosted = true
 	address := ":80"
-	if opts.DevHTTPAddress != "" {
+	switch {
+	case opts.HostedHTTPAddress != "":
+		address = opts.HostedHTTPAddress
+	case opts.DevHTTPAddress != "":
 		address = opts.DevHTTPAddress
 	}
 	ln, err := net.Listen("tcp", address)
 	if err != nil {
 		return nil, fmt.Errorf("listen on hosted HTTP address: %w", err)
 	}
-	server := &http.Server{Handler: publicHandlerModeWithUIDev(p.rt, app, opts.HTTPSDomain, handler, true, opts.PublicUIDev, oauth), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 5 * time.Minute, WriteTimeout: 5 * time.Minute, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10, BaseContext: func(net.Listener) context.Context { return ctx }}
+	public := newPublicHandler(p.rt, app, opts.HTTPSDomain, handler, publicHandlerOptions{hosted: true, uiDev: opts.PublicUIDev, proxy: opts.HostedProxy}, oauth)
+	server := &http.Server{Handler: public, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 5 * time.Minute, WriteTimeout: 5 * time.Minute, IdleTimeout: hostedIdleTimeout, MaxHeaderBytes: 32 << 10, BaseContext: func(net.Listener) context.Context { return ctx }}
 	s := &publicServers{http: server, plainListener: ln}
 	go func() { failures <- server.Serve(ln) }()
 	return s, nil
@@ -202,7 +285,7 @@ func invalidateHostedRestore(app core.App, p *Project) error {
 
 // CheckLocalProject refuses local-only initialization and serving of a hosted
 // volume even before the database is opened. The account check after migrations
-// also protects copies whose private marker was not retained.
+// (checkLocalAccounts) also protects copies whose private marker was not retained.
 func CheckLocalProject(p *Project) error {
 	_, err := os.Stat(filepath.Join(p.Cache, "hosted.json"))
 	if err == nil {
@@ -210,6 +293,23 @@ func CheckLocalProject(p *Project) error {
 	}
 	if !errors.Is(err, os.ErrNotExist) {
 		return err
+	}
+	return nil
+}
+
+// checkLocalAccounts refuses local and tunnel serving of a database that a
+// hosted instance has used. A local database holds at most one account, the
+// identity's local address, in both account modes; a hosted database always
+// holds the OWNER_EMAIL account, which is never that address with AccountsMulti.
+// The check reads only the database, so it holds for copies that lost the
+// private hosted marker, and it does not depend on Policy.Accounts.
+func checkLocalAccounts(app core.App, localEmail string) error {
+	records, err := app.FindRecordsByFilter("users", "", "", 2, 0)
+	if err != nil {
+		return err
+	}
+	if len(records) > 1 || len(records) == 1 && lowerASCII(records[0].Email()) != lowerASCII(localEmail) {
+		return errors.New("this hosted project requires explicit --hosted serving; local and tunnel modes are unavailable")
 	}
 	return nil
 }

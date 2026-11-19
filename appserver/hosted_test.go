@@ -30,7 +30,7 @@ func hostedTestApp(t *testing.T) (*testApp, http.Handler) {
 
 func hostedTestAppRT(t *testing.T, testRT *Runtime) (*testApp, http.Handler) {
 	t.Helper()
-	a := newTestApp(t)
+	a := newTestAppRT(t, testRT)
 	a.user.SetEmail("owner@example.test")
 	if err := a.app.Save(a.user); err != nil {
 		t.Fatal(err)

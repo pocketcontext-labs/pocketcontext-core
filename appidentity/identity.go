@@ -37,7 +37,7 @@ type Identity struct {
 
 	EnvPrefix         string // used as EnvPrefix + "_DB", "_MCP_REDIRECT_EXCEPTIONS", ...
 	LocalKeyHeader    string // local key request header, stripped on public listeners
-	LocalAccountEmail string // the one account's persisted sign-in identity
+	LocalAccountEmail string // the local account's persisted sign-in identity
 	ReaderStorageKey  string // browser localStorage key for the reader session
 	HookGlobal        string // JS binding name in hooks and migrations
 }

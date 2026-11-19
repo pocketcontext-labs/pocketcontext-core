@@ -30,6 +30,7 @@ func fixtureConfig(public func(method, path string) bool) Config {
 		Identity: testapp.Identity(), Version: "fixture-release", Commit: "fixturecommit", Assets: testapp.Assets(),
 		Policy: Policy{
 			PublicRoute: func(core.App) func(string, string) bool { return public },
+			Accounts:    AccountsSingle,
 			Maintenance: maintenance.Policy{ReadPosts: map[string]bool{"/api/fixture/read": true}, ReadGets: map[string]bool{}},
 			Observe:     mcpobserve.Policy{Tools: []string{"fixture_tool"}, APIRoutes: []string{"/api/fixture/read"}},
 			// Values unlike any shipped product's, so a hardcoded one in core fails.
@@ -135,8 +136,14 @@ func fixtureHooks(vm *goja.Runtime) map[string]any {
 // creates the project's one account.
 func newTestApp(t *testing.T) *testApp {
 	t.Helper()
+	return newTestAppRT(t, testRT)
+}
+
+// newTestAppRT is newTestApp with the hooks and bindings of rt.
+func newTestAppRT(t *testing.T, rt *Runtime) *testApp {
+	t.Helper()
 	app := core.NewBaseApp(core.BaseAppConfig{DataDir: t.TempDir()})
-	jsvm.MustRegister(app, hooksConfig(testRT, testAssetsDir(), ""))
+	jsvm.MustRegister(app, hooksConfig(rt, testAssetsDir(), ""))
 	if err := app.Bootstrap(); err != nil {
 		t.Fatal(err)
 	}

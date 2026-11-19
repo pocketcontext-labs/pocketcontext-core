@@ -56,6 +56,13 @@ func publicRequest(r *http.Request) bool {
 	return v
 }
 
+// The AccountsMulti instance-wide sign-in ceilings: 100 at once, refilled one
+// per 100 ms (600 a minute), in front of which each client has its own budget.
+const (
+	hostedMultiEmailEvery = 100 * time.Millisecond
+	hostedMultiEmailBurst = 100
+)
+
 type authAttempt struct {
 	limiter *rate.Limiter
 	touched time.Time
@@ -104,16 +111,47 @@ func publicHandlerMode(rt *Runtime, app core.App, domain string, next http.Handl
 }
 
 func publicHandlerModeWithUIDev(rt *Runtime, app core.App, domain string, next http.Handler, hosted, uiDev bool, oauth ...*mcpOAuth) http.Handler {
-	route := rt.cfg.Policy.PublicRoute(app)
-	keyHeader := rt.cfg.Identity.LocalKeyHeader
-	bodyLimit := rt.cfg.Policy.PublicBodyLimit
 	var mcp *mcpOAuth
 	if len(oauth) > 0 {
 		mcp = oauth[0]
 	}
-	limiter := &publicAuthLimiter{}
+	return newPublicHandler(rt, app, domain, next, publicHandlerOptions{hosted: hosted, uiDev: uiDev}, mcp)
+}
+
+// publicHandlerOptions selects the public handler's mode. proxy is set only by
+// hosted plain HTTP serving; native HTTPS never trusts a forwarded header.
+// limiter, when set, is the per-address sign-in limiter (tests inspect it).
+type publicHandlerOptions struct {
+	hosted, uiDev bool
+	proxy         *HostedProxy
+	limiter       *publicAuthLimiter
+}
+
+func newPublicHandler(rt *Runtime, app core.App, domain string, next http.Handler, opts publicHandlerOptions, mcp *mcpOAuth) http.Handler {
+	hosted, uiDev, proxy := opts.hosted, opts.uiDev, opts.proxy
+	if !hosted {
+		proxy = nil
+	}
+	route := rt.cfg.Policy.PublicRoute(app)
+	keyHeader := rt.cfg.Identity.LocalKeyHeader
+	bodyLimit := rt.cfg.Policy.PublicBodyLimit
+	limiter := opts.limiter
+	if limiter == nil {
+		limiter = &publicAuthLimiter{}
+	}
 	emailLimiter := rate.NewLimiter(rate.Every(6*time.Second), 10)
 	redemptionLimiter := rate.NewLimiter(rate.Every(6*time.Second), 10)
+	globalInfo := rateLimitInfo{"", 6, 10, 0, 60}
+	// With AccountsMulti one client must not spend every account's sign-in
+	// emails: each client address has the budget the instance had before
+	// (10, refilled one per 6 s), and the instance a larger ceiling.
+	var emailClients, redemptionClients *publicAuthLimiter
+	if hosted && rt.cfg.Policy.Accounts == AccountsMulti {
+		emailLimiter = rate.NewLimiter(rate.Every(hostedMultiEmailEvery), hostedMultiEmailBurst)
+		redemptionLimiter = rate.NewLimiter(rate.Every(hostedMultiEmailEvery), hostedMultiEmailBurst)
+		globalInfo = rateLimitInfo{"", 1, hostedMultiEmailBurst, 0, int(hostedMultiEmailEvery * hostedMultiEmailBurst / time.Second)}
+		emailClients, redemptionClients = &publicAuthLimiter{}, &publicAuthLimiter{}
+	}
 	var otpMu sync.Mutex // Serialize OTP redemption, including validation and deletion.
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -125,6 +163,11 @@ func publicHandlerModeWithUIDev(rt *Runtime, app core.App, domain string, next h
 		if r.Host != domain && r.Host != domain+":443" {
 			http.Error(w, "Unexpected host.", http.StatusForbidden)
 			return
+		}
+		// Behind a trusted TLS-terminating proxy, every per-address limiter
+		// (core's and PocketBase's) keys on the client the proxy reports.
+		if proxy != nil {
+			r.RemoteAddr = proxy.remoteAddr(r)
 		}
 		if origin := r.Header.Get("Origin"); origin != "" && origin != "https://"+domain {
 			http.Error(w, "Unexpected origin.", http.StatusForbidden)
@@ -152,14 +195,20 @@ func publicHandlerModeWithUIDev(rt *Runtime, app core.App, domain string, next h
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		if isOTP {
 			w.Header().Set("Cache-Control", "no-store")
-			selectedLimiter := emailLimiter
+			selectedLimiter, clients := emailLimiter, emailClients
 			limitName := "email_request"
 			if r.URL.Path == "/api/collections/users/auth-with-otp" || r.URL.Path == OTPCodePath {
-				selectedLimiter = redemptionLimiter
+				selectedLimiter, clients = redemptionLimiter, redemptionClients
 				limitName = "email_redemption"
 			}
+			if clients != nil && !clients.allow(r.RemoteAddr) {
+				writeRateLimit(app, w, r, clients.rejection(r.RemoteAddr, "client_"+limitName), "Too many requests. Please try again shortly.")
+				return
+			}
 			if !selectedLimiter.Allow() {
-				writeRateLimit(app, w, r, rateLimitInfo{limitName, 6, 10, 0, 60}, "Too many requests. Please try again shortly.")
+				info := globalInfo
+				info.Limit = limitName
+				writeRateLimit(app, w, r, info, "Too many requests. Please try again shortly.")
 				return
 			}
 			// Codes are short, so each address also gets its own budget.
@@ -184,8 +233,9 @@ func publicHandlerModeWithUIDev(rt *Runtime, app core.App, domain string, next h
 		}
 		// Native serving terminates TLS itself; hosted mode has a fixed HTTPS
 		// origin at its upstream proxy. Forwarded headers are never authority
-		// for identity, origin, scheme, or source-address decisions.
-		for _, name := range []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Real-IP", keyHeader} {
+		// for identity, origin or scheme, and for the source address only
+		// through an explicit HostedProxy above, which has already been applied.
+		for _, name := range []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Real-IP", "CF-Connecting-IP", "True-Client-IP", keyHeader} {
 			r.Header.Del(name)
 		}
 		r = r.WithContext(context.WithValue(context.WithValue(r.Context(), publicContextKey{}, true), publicOriginContextKey{}, "https://"+domain))

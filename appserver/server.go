@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sort"
+	"sync"
 	"syscall"
 	"time"
 
@@ -42,6 +43,13 @@ type ServeOptions struct {
 	HostedInit     bool
 	HostedRestore  bool
 	HostedConfig   *HostedConfig
+	// HostedHTTPAddress is where hosted mode serves plain HTTP behind a
+	// TLS-terminating proxy: a literal IP and port such as 0.0.0.0:8080 or
+	// 127.0.0.1:8098 (ValidateHostedHTTPAddress). Empty keeps ":80". Hosted only.
+	HostedHTTPAddress string
+	// HostedProxy trusts one client-address header from the proxy's peer
+	// networks for per-address rate limits. nil trusts none. Hosted only.
+	HostedProxy *HostedProxy
 	// MCPHandler builds the protocol adapter around the ordinary authenticated API.
 	MCPHandler func(http.Handler) http.Handler
 	// Service starts after the HTTP listeners are ready. Its failure stops the
@@ -131,6 +139,9 @@ func ServeContext(parent context.Context, p *Project, opts ServeOptions) (result
 		return errors.New("public UI development is not enabled for this application")
 	}
 	if err := validatePublicUIDev(opts); err != nil {
+		return err
+	}
+	if err := validateHostedServing(opts); err != nil {
 		return err
 	}
 	if opts.HostedRestore && (!opts.Hosted || opts.HostedInit) {
@@ -352,18 +363,17 @@ func ServeContext(parent context.Context, p *Project, opts ServeOptions) (result
 	}()
 	stop := make(chan struct{}, 1)
 	local := &localRoutes{p: p, store: store, key: key, stop: stop, uiDev: opts.UIDev, mcp: opts.MCP, hosted: opts.Hosted}
+	if opts.Hosted && p.rt.cfg.Policy.Accounts == AccountsMulti && opts.HostedConfig != nil {
+		local.owner = opts.HostedConfig.OwnerEmail
+	}
 	app.OnServe().BindFunc(func(e *core.ServeEvent) error {
 		e.InstallerFunc = nil // accounts are created by the application's init command
 		if migrations() != before {
 			store.Changed()
 		}
 		if !opts.Hosted {
-			records, err := app.FindRecordsByFilter("users", "", "", 1, 0)
-			if err != nil {
+			if err := checkLocalAccounts(app, p.rt.cfg.Identity.LocalAccountEmail); err != nil {
 				return err
-			}
-			if len(records) > 0 && records[0].Email() != p.rt.cfg.Identity.LocalAccountEmail {
-				return errors.New("this hosted project requires explicit --hosted serving; local and tunnel modes are unavailable")
 			}
 		}
 		if opts.Hosted {
@@ -395,9 +405,23 @@ func ServeContext(parent context.Context, p *Project, opts ServeOptions) (result
 		if err := e.Next(); err != nil {
 			return err
 		}
-		if hooks.Background != nil {
+		pruneOwner := ""
+		if opts.Hosted && p.rt.cfg.Policy.Accounts == AccountsMulti {
+			pruneOwner, _ = app.Store().Get(hostedOwnerStoreKey).(string)
+		}
+		if hooks.Background != nil || pruneOwner != "" {
 			productBackgroundStarted = true
-			go func() { defer close(productBackgroundDone); hooks.Background(backgroundCtx, app) }()
+			go func() {
+				defer close(productBackgroundDone)
+				var wg sync.WaitGroup
+				if pruneOwner != "" {
+					wg.Go(func() { runHostedAccountPruning(backgroundCtx, app, pruneOwner) })
+				}
+				if hooks.Background != nil {
+					hooks.Background(backgroundCtx, app)
+				}
+				wg.Wait()
+			}()
 		}
 		return nil
 	})

@@ -86,6 +86,16 @@ type mcpOAuth struct {
 	redirectExceptions map[string]bool
 }
 
+// Instance limits on OAuth state, and each account's share with AccountsMulti.
+// Registered clients are limited to oauthMaxClients for the whole instance.
+const (
+	oauthMaxClients = 256
+	oauthMaxGrants  = 100
+	oauthMaxAccess  = 2000
+	oauthUserGrants = oauthMaxGrants / 10
+	oauthUserAccess = oauthMaxAccess / 10
+)
+
 func oauthHash(s string) string { h := sha256.Sum256([]byte(s)); return hex.EncodeToString(h[:]) }
 func (o *mcpOAuth) clock() time.Time {
 	if o.now != nil {
@@ -481,7 +491,7 @@ func (o *mcpOAuth) register(w http.ResponseWriter, r *http.Request) {
 	}
 	o.mu.Lock()
 	err := o.mutate(func(s *oauthState) error {
-		if len(s.Clients) >= 256 {
+		if len(s.Clients) >= oauthMaxClients {
 			return errors.New("client limit reached")
 		}
 		s.Clients[c.ID] = c
@@ -748,17 +758,48 @@ func (o *mcpOAuth) token(w http.ResponseWriter, r *http.Request) {
 		oauthError(w, 400, "unsupported_grant_type", "Use authorization_code or refresh_token.")
 		return
 	}
-	if _, err := o.grantUser(grant); err != nil {
+	user, err := o.grantUser(grant)
+	if err != nil {
 		oauthError(w, 400, "invalid_grant", "Account authorization changed; reconnect.")
 		return
 	}
+	// With AccountsMulti each account has its own share, and accounts other
+	// than the owner stop one share short of the instance limits, so the
+	// owner can always connect. Client registration stays instance-wide
+	// because it is anonymous.
+	perUser := o.hosted && o.rt.cfg.Policy.Accounts == AccountsMulti
+	owner := perUser && o.rt.IsOwner(o.app, user)
 	access := atomicfile.RandomHex(32)
-	err := o.mutate(func(s *oauthState) error {
-		if _, exists := s.Grants[grant.ID]; !exists && len(s.Grants) >= 100 {
+	err = o.mutate(func(s *oauthState) error {
+		_, exists := s.Grants[grant.ID]
+		grantLimit, accessLimit := oauthMaxGrants, oauthMaxAccess
+		if perUser && !owner {
+			grantLimit, accessLimit = oauthMaxGrants-oauthUserGrants, oauthMaxAccess-oauthUserAccess
+		}
+		if !exists && len(s.Grants) >= grantLimit {
 			return errors.New("connection limit")
 		}
-		if len(s.Access) >= 2000 {
+		if len(s.Access) >= accessLimit {
 			return errors.New("access token limit")
+		}
+		if perUser {
+			grants, tokens := 0, 0
+			for _, g := range s.Grants {
+				if g.User == grant.User {
+					grants++
+				}
+			}
+			for _, a := range s.Access {
+				if g, ok := s.Grants[a.Grant]; ok && g.User == grant.User {
+					tokens++
+				}
+			}
+			if !exists && grants >= oauthUserGrants {
+				return errors.New("account connection limit")
+			}
+			if tokens >= oauthUserAccess {
+				return errors.New("account access token limit")
+			}
 		}
 		if usedRefresh != "" {
 			count := 0

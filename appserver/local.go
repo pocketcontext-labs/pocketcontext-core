@@ -38,6 +38,9 @@ type localRoutes struct {
 	mcp       bool
 	hosted    bool
 	clock     func() time.Time // hosted rate limits; nil means time.Now
+	// owner is the hosted OWNER_EMAIL of an AccountsMulti instance, whose
+	// account the local management routes act as. Empty everywhere else.
+	owner string
 }
 
 // Sign-in code lifetimes in seconds. Codes live only in server memory.
@@ -132,8 +135,17 @@ func (l *localRoutes) requireKey(e *core.RequestEvent) error {
 	return nil
 }
 
-// account returns the project's one account.
+// account returns the project's one account; on an AccountsMulti hosted
+// instance, the owner's account.
 func (l *localRoutes) account(app core.App) (*core.Record, error) {
+	if l.owner != "" {
+		owner, _ := canonicalEmail(l.owner)
+		found, err := findAccountsByEmail(app, owner)
+		if err != nil || len(found) != 1 {
+			return nil, apis.NewBadRequestError("No hosted owner account.", nil)
+		}
+		return found[0], nil
+	}
 	records, err := app.FindRecordsByFilter("users", "", "created", 1, 0)
 	if err != nil {
 		return nil, err

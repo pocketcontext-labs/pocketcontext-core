@@ -25,6 +25,7 @@ type TestServerOptions struct {
 	Hosted       bool
 	MCP          bool
 	HostedConfig *HostedConfig
+	HostedProxy  *HostedProxy     // trusted proxy of the hosted public handler; requires Hosted
 	ReaderDir    string           // serve this built reader when not empty
 	MCPHandler   http.Handler     // enable OAuth-protected MCP when set
 	Clock        func() time.Time // hosted rate limit clock when set; nil means real time
@@ -51,6 +52,14 @@ func (rt *Runtime) NewTestServer(app core.App, opts TestServerOptions) (*TestSer
 	if opts.Hosted && !rt.cfg.Policy.Hosted.configured() {
 		return nil, errNoHostedMode
 	}
+	if opts.HostedProxy != nil {
+		if !opts.Hosted {
+			return nil, errors.New("a hosted proxy requires a hosted test server")
+		}
+		if err := opts.HostedProxy.Validate(); err != nil {
+			return nil, err
+		}
+	}
 	p := &Project{rt: rt, Cache: opts.Cache, Config: ProjectConfig{Port: rt.cfg.Identity.DefaultPort, Instance: "synthetic-test"}}
 	if opts.Hosted {
 		if err := configureHosted(rt, app, opts.Domain, opts.HostedConfig, false); err != nil {
@@ -62,6 +71,9 @@ func (rt *Runtime) NewTestServer(app core.App, opts TestServerOptions) (*TestSer
 		return nil, err
 	}
 	local := &localRoutes{p: p, hosted: opts.Hosted, mcp: opts.MCP, publicURL: "https://" + opts.Domain, clock: opts.Clock}
+	if opts.Hosted && rt.cfg.Policy.Accounts == AccountsMulti && opts.HostedConfig != nil {
+		local.owner = opts.HostedConfig.OwnerEmail
+	}
 	event := &core.ServeEvent{App: app, Router: router}
 	if err := local.register(event); err != nil {
 		return nil, err
@@ -76,16 +88,15 @@ func (rt *Runtime) NewTestServer(app core.App, opts TestServerOptions) (*TestSer
 	if err != nil {
 		return nil, err
 	}
-	var oauth []*mcpOAuth
+	var oauth *mcpOAuth
 	if opts.MCPHandler != nil {
-		o, err := newMCPOAuth(app, p, opts.Domain, opts.MCPHandler)
-		if err != nil {
+		if oauth, err = newMCPOAuth(app, p, opts.Domain, opts.MCPHandler); err != nil {
 			return nil, err
 		}
-		o.hosted = opts.Hosted
-		oauth = append(oauth, o)
+		oauth.hosted = opts.Hosted
 	}
-	return &TestServer{rt: rt, project: p, local: local, router: raw, public: publicHandlerMode(rt, app, opts.Domain, raw, opts.Hosted, oauth...)}, nil
+	public := newPublicHandler(rt, app, opts.Domain, raw, publicHandlerOptions{hosted: opts.Hosted, proxy: opts.HostedProxy}, oauth)
+	return &TestServer{rt: rt, project: p, local: local, router: raw, public: public}, nil
 }
 
 // Project returns the test server's synthetic project.

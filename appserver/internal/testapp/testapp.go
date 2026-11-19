@@ -22,6 +22,11 @@ func Assets() fs.FS {
 	return sub
 }
 
+// MultiAccountBinding is the hook binding that turns the fixture into its
+// AccountsMulti variant: a function returning true lets its hooks accept more
+// than one account.
+const MultiAccountBinding = "multiAccount"
+
 // Identity returns a complete identity for the fixture.
 func Identity() appidentity.Identity {
 	return appidentity.Identity{

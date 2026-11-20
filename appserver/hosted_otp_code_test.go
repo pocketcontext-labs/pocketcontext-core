@@ -134,6 +134,31 @@ func TestHostedOTPCodeInputAndUnknownRequest(t *testing.T) {
 	}
 }
 
+func TestHostedMultiFailedCodesShareOneResponse(t *testing.T) {
+	rt := multiRT(t, nil)
+	rt.cfg.Text.OTPCodeEmail = codeEmailRuntime(t).cfg.Text.OTPCodeEmail
+	a, h := multiHostedTestApp(t, rt)
+	got := codeLogin(t, a, h)
+	absent := requestOTP(h, "absent@example.test")
+	var synthetic struct{ OTPID string }
+	if err := json.Unmarshal(absent.Body.Bytes(), &synthetic); err != nil || synthetic.OTPID == "" {
+		t.Fatal("expected a synthetic login request", err)
+	}
+	wantStatus, wantBody := redeemCode(h, synthetic.OTPID, "000000")
+	if wantStatus != http.StatusBadRequest {
+		t.Fatal("unexpected status for an invalid code", wantStatus)
+	}
+	for i := 0; i <= otpCodeAttempts; i++ {
+		status, body := redeemCode(h, got.otpID, wrongCode(got.code))
+		if status != wantStatus || body != wantBody {
+			t.Fatalf("failed validation differed on attempt %d: %d %s", i+1, status, body)
+		}
+	}
+	if _, err := a.app.FindOTPById(got.otpID); err == nil {
+		t.Fatal("attempt limit left the login request usable")
+	}
+}
+
 func TestHostedOTPCodeRateLimited(t *testing.T) {
 	_, h := hostedTestAppRT(t, codeEmailRuntime(t))
 	limited := false

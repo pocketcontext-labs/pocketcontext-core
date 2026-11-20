@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"errors"
 	"net/http"
 	"sync"
 	"time"
@@ -34,8 +35,9 @@ const (
 	// that never signed in.
 	hostedPruneInterval = 5 * time.Minute
 	hostedPruneBatch    = 100
-	// hostedOwnerStoreKey holds the canonical OWNER_EMAIL in the app store.
-	hostedOwnerStoreKey = "contextHostedOwner"
+	// hostedOwnerIDKey identifies the owner record ID in the app store and
+	// the private PocketBase parameters that travel with a database backup.
+	hostedOwnerIDKey = "contextHostedOwnerID"
 )
 
 // canonicalEmail trims an address and lower-cases it. Only printable ASCII is
@@ -93,11 +95,11 @@ func (rt *Runtime) IsOwner(app core.App, record *core.Record) bool {
 	if app == nil || record == nil || record.Collection() == nil || record.Collection().Name != "users" {
 		return false
 	}
-	owner, _ := app.Store().Get(hostedOwnerStoreKey).(string)
-	if owner == "" {
-		owner = lowerASCII(rt.cfg.Identity.LocalAccountEmail)
+	ownerID, _ := app.Store().Get(hostedOwnerIDKey).(string)
+	if ownerID != "" {
+		return record.Id == ownerID
 	}
-	return lowerASCII(record.Email()) == owner
+	return lowerASCII(record.Email()) == lowerASCII(rt.cfg.Identity.LocalAccountEmail)
 }
 
 // hostedSendHistory allows one sign-in email per address per minute and
@@ -186,7 +188,7 @@ func fakeOTPResponse(e *core.RecordCreateOTPRequestEvent) error {
 // answers like an unknown address, and every request takes at least
 // minDuration, so the response does not show which addresses exist or are
 // allowed.
-func bindHostedSignIn(rt *Runtime, app core.App, owner string) {
+func bindHostedSignIn(rt *Runtime, app core.App, ownerID string) {
 	s := hostedSignInFor(app)
 	app.OnRecordRequestOTPRequest("users").Bind(&hook.Handler[*core.RecordCreateOTPRequestEvent]{Id: "hostedEmailCooldown", Func: func(e *core.RecordCreateOTPRequestEvent) error {
 		start := time.Now()
@@ -197,7 +199,7 @@ func bindHostedSignIn(rt *Runtime, app core.App, owner string) {
 				time.Sleep(wait)
 			}
 		}()
-		record := s.resolve(rt, e, owner)
+		record := s.resolve(rt, e, ownerID)
 		if record == nil {
 			return fakeOTPResponse(e)
 		}
@@ -208,7 +210,7 @@ func bindHostedSignIn(rt *Runtime, app core.App, owner string) {
 
 // resolve returns the account to send a sign-in email to, or nil to send
 // nothing. Failures are logged without the address or the error text.
-func (s *hostedSignIn) resolve(rt *Runtime, e *core.RecordCreateOTPRequestEvent, owner string) *core.Record {
+func (s *hostedSignIn) resolve(rt *Runtime, e *core.RecordCreateOTPRequestEvent, ownerID string) *core.Record {
 	// PocketBase has already read and validated this body; it can be read again.
 	var form struct {
 		Email string `json:"email" form:"email"`
@@ -248,7 +250,7 @@ func (s *hostedSignIn) resolve(rt *Runtime, e *core.RecordCreateOTPRequestEvent,
 	if hookFailed || !allowed {
 		return nil
 	}
-	return s.createAccount(rt, e, email, owner)
+	return s.createAccount(rt, e, email, ownerID)
 }
 
 func pendingOTPs(app core.App, record *core.Record) int {
@@ -265,13 +267,13 @@ func pendingOTPs(app core.App, record *core.Record) int {
 	return n
 }
 
-func (s *hostedSignIn) createAccount(rt *Runtime, e *core.RecordCreateOTPRequestEvent, email, owner string) *core.Record {
+func (s *hostedSignIn) createAccount(rt *Runtime, e *core.RecordCreateOTPRequestEvent, email, ownerID string) *core.Record {
 	s.create.Lock()
 	defer s.create.Unlock()
 	if found, err := findAccountsByEmail(e.App, email); err != nil || len(found) != 0 {
 		return nil // created meanwhile; its own request sends
 	}
-	if _, err := pruneHostedAccounts(e.App, owner, time.Now()); err != nil {
+	if _, err := pruneHostedAccounts(e.App, ownerID, time.Now()); err != nil {
 		e.App.Logger().Error("Hosted account pruning failed", "collection", "users")
 	}
 	unverified, err := e.App.CountRecords("users", dbx.HashExp{"verified": false})
@@ -292,8 +294,8 @@ func (s *hostedSignIn) createAccount(rt *Runtime, e *core.RecordCreateOTPRequest
 // signed in: unverified (every successful sign-in verifies, failing closed),
 // created more than one OTP lifetime ago and with no pending OTP. It never
 // deletes the owner or a verified account, and does nothing without an owner.
-func pruneHostedAccounts(app core.App, owner string, now time.Time) (int, error) {
-	if owner == "" {
+func pruneHostedAccounts(app core.App, ownerID string, now time.Time) (int, error) {
+	if ownerID == "" {
 		return 0, nil
 	}
 	cutoff, err := types.ParseDateTime(now.Add(-hostedOTPDuration))
@@ -304,7 +306,7 @@ func pruneHostedAccounts(app core.App, owner string, now time.Time) (int, error)
 	err = app.RecordQuery("users").
 		AndWhere(dbx.HashExp{"verified": false}).
 		AndWhere(dbx.NewExp("[[created]] < {:cutoff}", dbx.Params{"cutoff": cutoff.String()})).
-		AndWhere(dbx.NewExp("LOWER([[email]]) != {:owner}", dbx.Params{"owner": owner})).
+		AndWhere(dbx.Not(dbx.HashExp{"id": ownerID})).
 		Limit(hostedPruneBatch).All(&records)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -314,25 +316,44 @@ func pruneHostedAccounts(app core.App, owner string, now time.Time) (int, error)
 	}
 	deleted := 0
 	for _, record := range records {
-		if record.Verified() || lowerASCII(record.Email()) == owner || pendingOTPs(app, record) > 0 {
-			continue
-		}
-		if err := app.Delete(record); err != nil {
+		removed, err := pruneHostedAccount(app, record.Id, ownerID, cutoff)
+		if err != nil {
 			app.Logger().Error("Hosted account pruning could not delete an account", "collection", "users", "record", record.Id)
-			continue
+		} else if removed {
+			deleted++
 		}
-		deleted++
 	}
 	return deleted, nil
 }
 
+// Re-read each candidate and its pending sign-ins inside the write transaction.
+// Verification or a new pending OTP since the batch query keeps the account.
+func pruneHostedAccount(app core.App, id, ownerID string, cutoff types.DateTime) (bool, error) {
+	var removed bool
+	err := app.RunInTransaction(func(tx core.App) error {
+		record, err := tx.FindRecordById("users", id)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if record.Id == ownerID || record.Verified() || !record.GetDateTime("created").Before(cutoff) || pendingOTPs(tx, record) > 0 {
+			return nil
+		}
+		removed = true
+		return tx.Delete(record)
+	})
+	return removed && err == nil, err
+}
+
 // runHostedAccountPruning prunes at start and every hostedPruneInterval until
 // ctx ends.
-func runHostedAccountPruning(ctx context.Context, app core.App, owner string) {
+func runHostedAccountPruning(ctx context.Context, app core.App, ownerID string) {
 	ticker := time.NewTicker(hostedPruneInterval)
 	defer ticker.Stop()
 	for {
-		if n, err := pruneHostedAccounts(app, owner, time.Now()); err != nil {
+		if n, err := pruneHostedAccounts(app, ownerID, time.Now()); err != nil {
 			app.Logger().Error("Hosted account pruning failed", "collection", "users")
 		} else if n > 0 {
 			app.Logger().Info("Hosted accounts pruned", "collection", "users", "count", n)

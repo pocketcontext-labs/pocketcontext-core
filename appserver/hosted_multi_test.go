@@ -158,6 +158,9 @@ func TestHostedMultiOwnerBootstrap(t *testing.T) {
 	if err := hosted(fresh, "typo@example.test", false); err == nil || !strings.Contains(err.Error(), "owner changes require explicit maintenance") {
 		t.Fatalf("owner change: %v", err)
 	}
+	if err := hosted(fresh, member.Email(), false); err == nil {
+		t.Fatal("a restart transferred ownership to a member")
+	}
 	if n, _ := fresh.CountRecords("users"); n != 2 {
 		t.Fatal("owner change created an account", n)
 	}
@@ -192,6 +195,34 @@ func TestHostedMultiOwnerBootstrap(t *testing.T) {
 		if err := hosted(migratedApp(t, rt), address, true); err == nil {
 			t.Fatalf("owner %q accepted", address)
 		}
+	}
+}
+
+func TestHostedMultiLegacyOwnerBinding(t *testing.T) {
+	rt := multiRT(t, nil)
+	app := migratedApp(t, rt)
+	member := addUser(t, app, "member@example.test", true)
+	owner := addUser(t, app, "owner@example.test", true)
+	cfg := syntheticHostedConfig()
+	start := func() error { return configureHosted(rt, app, "knowledge.example.com", cfg, false) }
+	if err := start(); err == nil {
+		t.Fatal("ambiguous legacy database started without an owner ID")
+	}
+	cfg.OwnerID = member.Id
+	if err := start(); err == nil {
+		t.Fatal("owner ID and owner email identify different users")
+	}
+	cfg.OwnerID = owner.Id
+	if err := start(); err != nil {
+		t.Fatal(err)
+	}
+	cfg.OwnerID = ""
+	if err := start(); err != nil {
+		t.Fatal("confirmed binding did not persist", err)
+	}
+	cfg.OwnerID, cfg.OwnerEmail = member.Id, member.Email()
+	if err := start(); err == nil {
+		t.Fatal("explicit ID overrode established ownership")
 	}
 }
 
@@ -398,8 +429,10 @@ func TestHostedMultiLocalRoutesActAsOwner(t *testing.T) {
 	rt := multiRT(t, nil)
 	app := migratedApp(t, rt)
 	member := addUser(t, app, "member@example.test", true) // created before the owner
-	addUser(t, app, "owner@example.test", false)
-	s, err := rt.NewTestServer(app, TestServerOptions{Domain: "knowledge.example.com", Hosted: true, HostedConfig: syntheticHostedConfig()})
+	owner := addUser(t, app, "owner@example.test", false)
+	cfg := syntheticHostedConfig()
+	cfg.OwnerID = owner.Id
+	s, err := rt.NewTestServer(app, TestServerOptions{Domain: "knowledge.example.com", Hosted: true, HostedConfig: cfg})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -577,10 +610,10 @@ func TestMultiHostedDatabaseRefusedForLocalServing(t *testing.T) {
 	rt := multiRT(t, nil)
 	app := migratedApp(t, rt)
 	addUser(t, app, "owner@example.test", false)
-	addUser(t, app, "member@example.test", true)
 	if err := configureHosted(rt, app, "knowledge.example.com", syntheticHostedConfig(), false); err != nil {
 		t.Fatal(err)
 	}
+	addUser(t, app, "member@example.test", true)
 	if _, err := app.DB().NewQuery("VACUUM INTO {:path}").Bind(map[string]any{"path": p.DB}).Execute(); err != nil {
 		t.Fatal(err)
 	}

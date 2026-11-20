@@ -271,11 +271,43 @@ func TestHostedMultiUnverifiedCapAndPruning(t *testing.T) {
 	if n, err := pruneHostedAccounts(app, "", time.Now()); err != nil || n != 0 {
 		t.Fatal("pruned without an owner", n, err)
 	}
-	if n, err := pruneHostedAccounts(app, "owner@example.test", time.Now()); err != nil || n != 1 {
+	if n, err := pruneHostedAccounts(app, a.user.Id, time.Now()); err != nil || n != 1 {
 		t.Fatal("pruned", n, err)
 	}
 	if _, err := app.FindRecordById("users", a.user.Id); err != nil {
 		t.Fatal("owner pruned")
+	}
+}
+
+func TestPruningDuringFirstHostedSignIn(t *testing.T) {
+	rt := multiRT(t, nil)
+	a, h := multiHostedTestApp(t, rt)
+	user := addUser(t, a.app, "member@example.test", false)
+	ageAccount(t, a.app, user, time.Hour)
+	sent := captureOTPMail(a.app)
+	requestOTP(h, user.Email())
+	mail := waitOTPMail(t, sent)
+
+	// At the first instant the deletion is committed a pruner can start, or
+	// revisit a candidate selected before redemption began.
+	var observed bool
+	a.app.OnRecordAfterDeleteSuccess(core.CollectionNameOTPs).BindFunc(func(e *core.RecordEvent) error {
+		observed = true
+		if n, err := pruneHostedAccounts(e.App, a.user.Id, time.Now()); err != nil || n != 0 {
+			t.Errorf("pruning when the pending OTP disappeared: count=%d error=%v", n, err)
+		}
+		cutoff, _ := types.ParseDateTime(time.Now().Add(-hostedOTPDuration))
+		if removed, err := pruneHostedAccount(e.App, user.Id, a.user.Id, cutoff); err != nil || removed {
+			t.Errorf("a stale prune candidate was removed: %t %v", removed, err)
+		}
+		return e.Next()
+	})
+	login := hostedRequest(h, "POST", "/api/collections/users/auth-with-otp", fmt.Sprintf(`{"otpId":%q,"password":%q}`, mail.otpID, mail.password))
+	if !observed || login.Code != 200 {
+		t.Fatalf("first sign-in: deletion observed=%t status=%d", observed, login.Code)
+	}
+	if fresh, err := a.app.FindRecordById("users", user.Id); err != nil || !fresh.Verified() {
+		t.Fatal("first sign-in did not keep the verified account", err)
 	}
 }
 

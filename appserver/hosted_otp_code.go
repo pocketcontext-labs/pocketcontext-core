@@ -4,6 +4,8 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"database/sql"
+	"errors"
 	"fmt"
 	"math/big"
 	"net/url"
@@ -186,6 +188,37 @@ func bindHostedOTPCode(rt *Runtime, app core.App, domain string) {
 	})
 }
 
+// Consume the pending OTP and verify the current record in one transaction.
+// Pruning can see either a pending OTP or a verified account throughout.
+func consumeHostedOTP(app core.App, otpID, userID string, verify bool) (*core.Record, error) {
+	var user *core.Record
+	err := app.RunInTransaction(func(tx core.App) error {
+		otp, err := tx.FindOTPById(otpID)
+		if err != nil {
+			return err
+		}
+		if otp.RecordRef() != userID || otp.HasExpired(hostedOTPDuration) {
+			return sql.ErrNoRows
+		}
+		user, err = tx.FindRecordById(otp.CollectionRef(), userID)
+		if err != nil {
+			return err
+		}
+		if user.Collection().Name != "users" {
+			return sql.ErrNoRows
+		}
+		if err := tx.Delete(otp); err != nil {
+			return err
+		}
+		if verify && !user.Verified() {
+			user.SetVerified(true)
+			return tx.Save(user)
+		}
+		return nil
+	})
+	return user, err
+}
+
 func registerHostedOTPCodeRoute(e *core.ServeEvent, rt *Runtime) {
 	if rt.cfg.Text.OTPCodeEmail == nil {
 		return
@@ -202,39 +235,38 @@ func registerHostedOTPCodeRoute(e *core.ServeEvent, rt *Runtime) {
 		codes.redeem.Lock()
 		defer codes.redeem.Unlock()
 		result, recordID, left := codes.check(form.OTPID, form.Code)
-		switch result {
-		case otpCodeUnknown:
-			return re.BadRequestError("This code has expired or was already used. Send a new one.", nil)
-		case otpCodeLocked:
+		invalid := "This code has expired or was already used. Send a new one."
+		if rt.cfg.Policy.Accounts == AccountsMulti {
+			invalid = "Could not sign in with that code. Check the code or request a new email."
+		}
+		if result == otpCodeLocked {
 			// Too many wrong codes invalidate the whole login request, link included.
 			if otp, err := re.App.FindOTPById(form.OTPID); err == nil {
 				_ = re.App.Delete(otp)
 			}
-			return re.BadRequestError("Too many wrong codes. Send a new one.", nil)
-		case otpCodeWrong:
-			if left == 1 {
-				return re.BadRequestError("That code is wrong. 1 try left.", nil)
+		}
+		if result != otpCodeOK {
+			if rt.cfg.Policy.Accounts == AccountsSingle {
+				switch result {
+				case otpCodeLocked:
+					invalid = "Too many wrong codes. Send a new one."
+				case otpCodeWrong:
+					invalid = fmt.Sprintf("That code is wrong. %d tries left.", left)
+					if left == 1 {
+						invalid = "That code is wrong. 1 try left."
+					}
+				}
 			}
-			return re.BadRequestError(fmt.Sprintf("That code is wrong. %d tries left.", left), nil)
+			return re.BadRequestError(invalid, nil)
 		}
-		otp, err := re.App.FindOTPById(form.OTPID)
-		if err != nil || otp.RecordRef() != recordID || otp.HasExpired(hostedOTPDuration) {
-			return re.BadRequestError("This code has expired or was already used. Send a new one.", nil)
+		record, err := consumeHostedOTP(re.App, form.OTPID, recordID, true)
+		if errors.Is(err, sql.ErrNoRows) {
+			return re.BadRequestError(invalid, nil)
 		}
-		record, err := re.App.FindRecordById(otp.CollectionRef(), otp.RecordRef())
-		if err != nil || record.Collection().Name != "users" {
-			return re.BadRequestError("This code has expired or was already used. Send a new one.", nil)
-		}
-		if err = re.App.Delete(otp); err != nil {
+		if err != nil {
 			return re.InternalServerError("Could not complete login. Please try again.", nil)
 		}
 		re.Response.Header().Set("Cache-Control", "no-store")
-		if !record.Verified() {
-			record.SetVerified(true)
-			if err := re.App.Save(record); err != nil {
-				return re.InternalServerError("Could not complete login. Please try again.", nil)
-			}
-		}
 		return apis.RecordAuthResponse(re, record, core.MFAMethodOTP, nil)
 	})
 }

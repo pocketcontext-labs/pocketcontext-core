@@ -2,6 +2,8 @@ package appserver
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
@@ -26,15 +28,18 @@ var errNoHostedMode = errors.New("hosted mode is not configured for this applica
 // HostedConfig is process-local deployment configuration, never synced project data.
 type HostedConfig struct {
 	OwnerEmail string
-	SMTP       core.SMTPConfig
-	From       string
+	// OwnerID confirms the original account on the first upgrade of a legacy
+	// AccountsMulti database. Later starts use the persisted binding.
+	OwnerID string
+	SMTP    core.SMTPConfig
+	From    string
 }
 
-// HostedConfigFromEnv reads <EnvPrefix>_OWNER_EMAIL and the SMTP settings.
+// HostedConfigFromEnv reads the owner and SMTP configuration under EnvPrefix.
 func (rt *Runtime) HostedConfigFromEnv() (*HostedConfig, error) {
 	prefix := rt.cfg.Identity.EnvPrefix
 	get := func(name string) string { return os.Getenv(prefix + "_" + name) }
-	c := &HostedConfig{OwnerEmail: get("OWNER_EMAIL"), From: get("SMTP_FROM")}
+	c := &HostedConfig{OwnerEmail: get("OWNER_EMAIL"), OwnerID: get("OWNER_ID"), From: get("SMTP_FROM")}
 	for _, address := range []string{c.OwnerEmail, c.From} {
 		parsed, err := mail.ParseAddress(address)
 		if err != nil || parsed.Address != address || parsed.Name != "" || strings.ContainsAny(address, "\r\n") {
@@ -74,12 +79,15 @@ func configureHosted(rt *Runtime, app core.App, domain string, c *HostedConfig, 
 		return err
 	}
 	multi := rt.cfg.Policy.Accounts == AccountsMulti
-	owner := c.OwnerEmail
+	var ownerID string
 	if multi {
-		if err := ensureMultiOwner(rt, app, users, c.OwnerEmail, initialize); err != nil {
+		if err := app.RunInTransaction(func(tx core.App) error {
+			var err error
+			ownerID, err = ensureMultiOwner(rt, tx, users, c, initialize)
+			return err
+		}); err != nil {
 			return err
 		}
-		owner, _ = canonicalEmail(c.OwnerEmail)
 	} else {
 		records, err := app.FindRecordsByFilter("users", "", "", 2, 0)
 		if err != nil {
@@ -89,14 +97,18 @@ func configureHosted(rt *Runtime, app core.App, domain string, c *HostedConfig, 
 		case initialize && len(records) != 0:
 			return errors.New("hosted initialization refuses an existing account")
 		case initialize:
-			if err = app.Save(newHostedAccount(users, c.OwnerEmail, text.AccountName)); err != nil {
+			record := newHostedAccount(users, c.OwnerEmail, text.AccountName)
+			if err = app.Save(record); err != nil {
 				return fmt.Errorf("initialize hosted account: %w", err)
 			}
+			ownerID = record.Id
 		case len(records) != 1 || records[0].Email() != c.OwnerEmail:
 			return errors.New("hosted owner does not match the existing account; owner changes require explicit maintenance")
+		default:
+			ownerID = records[0].Id
 		}
 	}
-	app.Store().Set(hostedOwnerStoreKey, lowerASCII(owner))
+	app.Store().Set(hostedOwnerIDKey, ownerID)
 	users.PasswordAuth.Enabled = false
 	if d := rt.cfg.Policy.HostedSession; d > 0 {
 		users.AuthToken.Duration = int64(d / time.Second)
@@ -112,7 +124,7 @@ func configureHosted(rt *Runtime, app core.App, domain string, c *HostedConfig, 
 	// Fail closed before issuing credentials and recheck after acquiring the lock
 	// so simultaneous requests cannot redeem the same validated OTP twice.
 	if multi {
-		bindHostedSignIn(rt, app, owner)
+		bindHostedSignIn(rt, app, ownerID)
 	} else {
 		sendCooldown := rate.NewLimiter(rate.Every(time.Minute), 1)
 		app.OnRecordRequestOTPRequest("users").Bind(&hook.Handler[*core.RecordCreateOTPRequestEvent]{Id: "hostedEmailCooldown", Func: func(e *core.RecordCreateOTPRequestEvent) error {
@@ -126,21 +138,14 @@ func configureHosted(rt *Runtime, app core.App, domain string, c *HostedConfig, 
 	app.OnRecordAuthWithOTPRequest("users").Bind(&hook.Handler[*core.RecordAuthWithOTPRequestEvent]{Id: "hostedSingleUseOTP", Func: func(e *core.RecordAuthWithOTPRequestEvent) error {
 		redemption.Lock()
 		defer redemption.Unlock()
-		fresh, err := e.App.FindOTPById(e.OTP.Id)
-		if err != nil {
+		record, err := consumeHostedOTP(e.App, e.OTP.Id, e.Record.Id, multi)
+		if errors.Is(err, sql.ErrNoRows) {
 			return e.BadRequestError("Invalid or expired OTP", nil)
 		}
-		if err = e.App.Delete(fresh); err != nil {
+		if err != nil {
 			return e.InternalServerError("Could not complete login. Please try again.", nil)
 		}
-		// With AccountsMulti, verified means signed in at least once, which
-		// keeps the account from pruning; fail closed if it cannot be recorded.
-		if multi && !e.Record.Verified() {
-			e.Record.SetVerified(true)
-			if err = e.App.Save(e.Record); err != nil {
-				return e.InternalServerError("Could not complete login. Please try again.", nil)
-			}
-		}
+		e.Record = record
 		return e.Next()
 	}})
 	bindHostedOTPCode(rt, app, domain)
@@ -161,47 +166,71 @@ func configureHosted(rt *Runtime, app core.App, domain string, c *HostedConfig, 
 	return nil
 }
 
-// ensureMultiOwner checks the accounts of an AccountsMulti database before
-// hosted serving. The owner is found by its canonical address and created only
-// by initialization or in a database with no accounts. A database holding the
-// local account, or other accounts without the owner, is refused: it is a local
-// database or its owner changed, and both need explicit maintenance.
-func ensureMultiOwner(rt *Runtime, app core.App, users *core.Collection, ownerEmail string, initialize bool) error {
-	owner, ok := canonicalEmail(ownerEmail)
+func ensureMultiOwner(rt *Runtime, app core.App, users *core.Collection, cfg *HostedConfig, initialize bool) (string, error) {
+	owner, ok := canonicalEmail(cfg.OwnerEmail)
 	if !ok {
-		return errors.New("hosted OWNER_EMAIL must be a plain ASCII address")
+		return "", errors.New("hosted OWNER_EMAIL must be a plain ASCII address")
 	}
 	if owner == lowerASCII(rt.cfg.Identity.LocalAccountEmail) {
-		return errors.New("hosted OWNER_EMAIL must not be the local account address")
+		return "", errors.New("hosted OWNER_EMAIL must not be the local account address")
 	}
 	total, err := app.CountRecords(users)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if initialize && total != 0 {
-		return errors.New("hosted initialization refuses an existing account")
+		return "", errors.New("hosted initialization refuses an existing account")
 	}
+
+	var binding core.Param
+	err = app.ModelQuery(&binding).Model(hostedOwnerIDKey, &binding)
+	hasBinding := err == nil
+	if !hasBinding && !errors.Is(err, sql.ErrNoRows) {
+		return "", err
+	}
+	mismatch := errors.New("hosted owner does not match the existing accounts; owner changes require explicit maintenance")
+	var record *core.Record
 	if total == 0 {
-		if err := app.Save(newHostedAccount(users, owner, rt.cfg.Text.AccountName)); err != nil {
-			return fmt.Errorf("initialize hosted account: %w", err)
+		if hasBinding || cfg.OwnerID != "" {
+			return "", mismatch
 		}
-		return nil
+		record = newHostedAccount(users, owner, rt.cfg.Text.AccountName)
+		if err := app.Save(record); err != nil {
+			return "", fmt.Errorf("initialize hosted account: %w", err)
+		}
+	} else {
+		local, err := findAccountsByEmail(app, lowerASCII(rt.cfg.Identity.LocalAccountEmail))
+		if err != nil {
+			return "", err
+		}
+		if len(local) != 0 {
+			return "", errors.New("this database holds the local account; hosted serving of a local project requires explicit maintenance")
+		}
+		found, err := findAccountsByEmail(app, owner)
+		if err != nil {
+			return "", err
+		}
+		if len(found) != 1 || cfg.OwnerID != "" && cfg.OwnerID != found[0].Id {
+			return "", mismatch
+		}
+		record = found[0]
+		if hasBinding {
+			var id string
+			if err := json.Unmarshal(binding.Value, &id); err != nil || id != record.Id {
+				return "", mismatch
+			}
+			return record.Id, nil
+		}
+		if total > 1 && cfg.OwnerID == "" {
+			return "", fmt.Errorf("legacy hosted database needs its original owner record ID in %s_OWNER_ID to bind ownership", rt.cfg.Identity.EnvPrefix)
+		}
 	}
-	local, err := findAccountsByEmail(app, lowerASCII(rt.cfg.Identity.LocalAccountEmail))
+	binding.Id = hostedOwnerIDKey
+	binding.Value, err = json.Marshal(record.Id)
 	if err != nil {
-		return err
+		return "", err
 	}
-	if len(local) != 0 {
-		return errors.New("this database holds the local account; hosted serving of a local project requires explicit maintenance")
-	}
-	found, err := findAccountsByEmail(app, owner)
-	if err != nil {
-		return err
-	}
-	if len(found) != 1 {
-		return errors.New("hosted owner does not match the existing accounts; owner changes require explicit maintenance")
-	}
-	return nil
+	return record.Id, app.Save(&binding)
 }
 
 // newHostedAccount is a hosted account as core creates it: a random password

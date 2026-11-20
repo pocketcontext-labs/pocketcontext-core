@@ -363,9 +363,6 @@ func ServeContext(parent context.Context, p *Project, opts ServeOptions) (result
 	}()
 	stop := make(chan struct{}, 1)
 	local := &localRoutes{p: p, store: store, key: key, stop: stop, uiDev: opts.UIDev, mcp: opts.MCP, hosted: opts.Hosted}
-	if opts.Hosted && p.rt.cfg.Policy.Accounts == AccountsMulti && opts.HostedConfig != nil {
-		local.owner = opts.HostedConfig.OwnerEmail
-	}
 	app.OnServe().BindFunc(func(e *core.ServeEvent) error {
 		e.InstallerFunc = nil // accounts are created by the application's init command
 		if migrations() != before {
@@ -405,17 +402,17 @@ func ServeContext(parent context.Context, p *Project, opts ServeOptions) (result
 		if err := e.Next(); err != nil {
 			return err
 		}
-		pruneOwner := ""
+		pruneOwnerID := ""
 		if opts.Hosted && p.rt.cfg.Policy.Accounts == AccountsMulti {
-			pruneOwner, _ = app.Store().Get(hostedOwnerStoreKey).(string)
+			pruneOwnerID, _ = app.Store().Get(hostedOwnerIDKey).(string)
 		}
-		if hooks.Background != nil || pruneOwner != "" {
+		if hooks.Background != nil || pruneOwnerID != "" {
 			productBackgroundStarted = true
 			go func() {
 				defer close(productBackgroundDone)
 				var wg sync.WaitGroup
-				if pruneOwner != "" {
-					wg.Go(func() { runHostedAccountPruning(backgroundCtx, app, pruneOwner) })
+				if pruneOwnerID != "" {
+					wg.Go(func() { runHostedAccountPruning(backgroundCtx, app, pruneOwnerID) })
 				}
 				if hooks.Background != nil {
 					hooks.Background(backgroundCtx, app)

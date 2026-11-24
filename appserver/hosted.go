@@ -33,6 +33,15 @@ type HostedConfig struct {
 	OwnerID string
 	SMTP    core.SMTPConfig
 	From    string
+	// SendSignInCode selects managed delivery for AccountsSingle. It receives
+	// only the six-digit code. The transport must bound its own I/O and return
+	// an error on a failed or unconfirmed submission. Leave SMTP and From empty.
+	SendSignInCode func(code string) error
+}
+
+func plainEmail(address string) bool {
+	parsed, err := mail.ParseAddress(address)
+	return err == nil && parsed.Address == address && parsed.Name == "" && !strings.ContainsAny(address, "\r\n")
 }
 
 // HostedConfigFromEnv reads the owner and SMTP configuration under EnvPrefix.
@@ -41,8 +50,7 @@ func (rt *Runtime) HostedConfigFromEnv() (*HostedConfig, error) {
 	get := func(name string) string { return os.Getenv(prefix + "_" + name) }
 	c := &HostedConfig{OwnerEmail: get("OWNER_EMAIL"), OwnerID: get("OWNER_ID"), From: get("SMTP_FROM")}
 	for _, address := range []string{c.OwnerEmail, c.From} {
-		parsed, err := mail.ParseAddress(address)
-		if err != nil || parsed.Address != address || parsed.Name != "" || strings.ContainsAny(address, "\r\n") {
+		if !plainEmail(address) {
 			return nil, errors.New("hosted mode requires plain OWNER_EMAIL and SMTP_FROM addresses")
 		}
 	}
@@ -72,6 +80,17 @@ func (rt *Runtime) HostedConfigFromEnv() (*HostedConfig, error) {
 func configureHosted(rt *Runtime, app core.App, domain string, c *HostedConfig, initialize bool) error {
 	if !rt.cfg.Policy.Hosted.configured() {
 		return errNoHostedMode
+	}
+	if c == nil {
+		return errors.New("hosted configuration is required")
+	}
+	if c.SendSignInCode != nil {
+		if rt.cfg.Policy.Accounts != AccountsSingle || !plainEmail(c.OwnerEmail) {
+			return errors.New("managed sign-in delivery requires a single owner with a plain email address")
+		}
+		if c.SMTP != (core.SMTPConfig{}) || c.From != "" {
+			return errors.New("managed sign-in delivery excludes SMTP configuration")
+		}
 	}
 	text := rt.cfg.Text
 	users, err := app.FindCollectionByNameOrId("users")
@@ -148,12 +167,14 @@ func configureHosted(rt *Runtime, app core.App, domain string, c *HostedConfig, 
 		e.Record = record
 		return e.Next()
 	}})
-	bindHostedOTPCode(rt, app, domain)
+	bindHostedOTPCode(rt, app, domain, c)
 	settings := app.Settings()
 	settings.SMTP = c.SMTP
 	settings.Meta.AppURL = "https://" + domain
 	settings.Meta.SenderName = text.OTPSenderName
-	settings.Meta.SenderAddress = c.From
+	if c.SendSignInCode == nil {
+		settings.Meta.SenderAddress = c.From
+	}
 	configureHostedRateLimits(app)
 	// The public handler alone decides the client address (HostedProxy). A
 	// stored trusted-proxy setting must never make PocketBase read a header.

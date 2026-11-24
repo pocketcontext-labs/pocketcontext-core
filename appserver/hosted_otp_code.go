@@ -155,24 +155,36 @@ func hostedOTPLink(domain, loginPath, otpID, password string) string {
 	return "https://" + domain + loginPath + "?" + q.Encode()
 }
 
-// bindHostedOTPCode replaces the sign-in email with the application's code
-// email. Without Text.OTPCodeEmail the email stays link-only and the code
-// route is not registered.
-func bindHostedOTPCode(rt *Runtime, app core.App, domain string) {
+// bindHostedOTPCode issues the same short code for managed delivery and for
+// apps that render a code in their own email.
+func bindHostedOTPCode(rt *Runtime, app core.App, domain string, cfg *HostedConfig) {
 	render := rt.cfg.Text.OTPCodeEmail
-	if render == nil {
+	send := cfg.SendSignInCode
+	if render == nil && send == nil {
 		return
 	}
+	owner := cfg.OwnerEmail
 	codes := hostedOTPCodesFor(app)
 	app.OnMailerRecordOTPSend("users").BindFunc(func(e *core.MailerRecordEvent) error {
 		otpID, _ := e.Meta["otpId"].(string)
 		password, _ := e.Meta["password"].(string)
+		if send != nil && (otpID == "" || password == "" || !rt.IsOwner(app, e.Record) || e.Record.Email() != owner) {
+			return errors.New("invalid managed sign-in request")
+		}
 		if otpID == "" || password == "" || e.Record == nil {
 			return e.Next()
 		}
 		code, err := codes.issue(otpID, e.Record.Id)
 		if err != nil {
 			return err
+		}
+		if send != nil {
+			// PocketBase handles a send error (including an unknown outcome)
+			// by deleting the pending OTP. Keep transport errors out of logs.
+			if err := send(code); err != nil {
+				return errors.New("managed sign-in submission failed")
+			}
+			return nil
 		}
 		subject, html, plain := render(OTPCodeEmail{Code: code, Link: hostedOTPLink(domain, rt.cfg.Text.OTPLoginPath, otpID, password), Domain: domain})
 		e.Message.Subject, e.Message.HTML, e.Message.Text = subject, html, plain
@@ -219,8 +231,8 @@ func consumeHostedOTP(app core.App, otpID, userID string, verify bool) (*core.Re
 	return user, err
 }
 
-func registerHostedOTPCodeRoute(e *core.ServeEvent, rt *Runtime) {
-	if rt.cfg.Text.OTPCodeEmail == nil {
+func registerHostedOTPCodeRoute(e *core.ServeEvent, rt *Runtime, codeOnly bool) {
+	if rt.cfg.Text.OTPCodeEmail == nil && !codeOnly {
 		return
 	}
 	codes := hostedOTPCodesFor(e.App)

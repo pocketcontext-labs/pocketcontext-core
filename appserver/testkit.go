@@ -71,6 +71,7 @@ func (rt *Runtime) NewTestServer(app core.App, opts TestServerOptions) (*TestSer
 		return nil, err
 	}
 	local := &localRoutes{p: p, hosted: opts.Hosted, mcp: opts.MCP, publicURL: "https://" + opts.Domain, clock: opts.Clock}
+	local.codeOnly = opts.Hosted && opts.HostedConfig.SendSignInCode != nil
 	event := &core.ServeEvent{App: app, Router: router}
 	if err := local.register(event); err != nil {
 		return nil, err

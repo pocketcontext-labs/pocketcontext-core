@@ -7,7 +7,7 @@ Applications require a tagged release in `go.mod` and pass everything that is th
 - `appidentity.Identity` (every name: app id, command, port, database and configuration file, environment prefix, local-key header, account email, ...). Every field is required; there is no default.
 - `appserver.Policy`: `PublicRoute` is the complete public route allowlist, plus maintenance reads and observability allowlists. `Accounts` is required and has no default: `AccountsSingle` keeps exactly one account (the local password account, or the hosted `OWNER_EMAIL` account); `AccountsMulti` lets a hosted instance hold other accounts beside the owner (see [Multiple hosted accounts](#multiple-hosted-accounts)). It also carries the values that are the application's and not core's: `OAuthScope` (the one MCP scope; connected clients store it), `PublicBodyLimit` (bytes per public request), `Legacy` (the migrations and tables of earlier releases whose databases are refused; explicit empty lists when there are none) and `Hosted` (the per-account hosted budget and its label in 429 responses; left zero, hosted serving is refused). Optional `ReaderFramesSelf` adds `frame-src 'self'` to the reader page's policy, for an application that embeds a sandboxed preview it serves itself; left false, the reader embeds no frames. Optional `HostedSession` sets how long a hosted sign-in lasts (the reader renews it while in use); zero keeps the users collection's token duration.
 - `appserver.Hooks`: product code at the points applications diverge. `AllowSignIn(app, email) (bool, error)` (`AccountsMulti` only; `New` refuses it with `AccountsSingle`) decides whether a hosted sign-in for an address without an account creates one.
-- `appserver.Text`: product copy, including `OTPLoginPath` (the reader route the hosted sign-in email links to) and `OAuthConsent.SignInHTML` (how to sign in outside hosted mode). `Text.OAuthConsent.Page` (`OAuthPage`) is optional trusted presentation of the OAuth pages: `CSS`, `BrandHTML`, `SignInPath` (the consent page's same-tab Log in, which appends `?next=` and the encoded `/oauth/authorize` request; the application must validate `next`) and `ConnectionsPath` (where a browser visit to `/oauth/connections` redirects; the JSON API is unchanged). Empty fields keep the plain page. Optional `Text.OTPCodeEmail` renders the hosted sign-in email (subject, HTML and plain text) from a six-digit code and the browser link, and enables `POST /api/collections/users/auth-with-otp-code` (`{otpId, code}`; the code is bound to the requesting client's login request, single use with the link, 15 minutes, five wrong codes invalidate the request, rate-limited); without it the email stays link-only.
+- `appserver.Text`: product copy, including `OTPLoginPath` (the reader route the hosted sign-in email links to) and `OAuthConsent.SignInHTML` (how to sign in outside hosted mode). `Text.OAuthConsent.Page` (`OAuthPage`) is optional trusted presentation of the OAuth pages: `CSS`, `BrandHTML`, `SignInPath` (the consent page's same-tab Log in, which appends `?next=` and the encoded `/oauth/authorize` request; the application must validate `next`) and `ConnectionsPath` (where a browser visit to `/oauth/connections` redirects; the JSON API is unchanged). Empty fields keep the plain page. Optional `Text.OTPCodeEmail` renders the hosted sign-in email (subject, HTML and plain text) from a six-digit code and the browser link, and enables `POST /api/collections/users/auth-with-otp-code` (`{otpId, code}`; the code is bound to the requesting client's login request, single use with the link, 15 minutes, five wrong codes invalidate the request, rate-limited); without it the SMTP email stays link-only.
 
 ## Packages
 
@@ -25,6 +25,19 @@ Applications require a tagged release in `go.mod` and pass everything that is th
 | `appserver.TestServer`, `Runtime.HooksConfig` | The real local routes, reader and public handler composed around an application's app, for that application's tests (`TestServerOptions.HostedProxy` applies a hosted proxy). |
 
 `tools/` holds the repository checks (`name_check.py`, `identity_scan.py`, `build_tags_sync.py`) and `shared_file_diff.py`, which each application release runs against the other application's shared non-Go files.
+
+## Single-owner managed sign-in delivery
+
+For a hosted application with `Policy.Accounts == AccountsSingle`, pass a
+`ServeOptions.HostedConfig` with `OwnerEmail` and `SendSignInCode func(string) error`.
+The callback receives the six-digit code, including leading zeros. The host
+transport owns the recipient, sender and message, enforces its own deadline,
+and returns an error on a failed or unconfirmed submission. Leave `SMTP` and
+`From` empty. Core verifies the owner, enables the code redemption route and
+reports `{"mode":"email","codeOnly":true}` from `/api/bundle/auth-mode`.
+The app can omit `Text.OTPCodeEmail` for this mode.
+PocketBase handles asynchronous submission errors and pending OTP cleanup as
+in SMTP mode. Without a callback, hosted sign-in uses the existing SMTP flow.
 
 ## Multiple hosted accounts
 

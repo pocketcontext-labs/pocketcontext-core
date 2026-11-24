@@ -185,7 +185,8 @@ type Text struct {
 	// OTPCodeEmail, when set, renders the hosted sign-in email: subject, HTML
 	// and plain-text bodies showing a six-digit code (for installed web apps,
 	// which cannot use the link) and the browser link. It enables
-	// OTPCodePath. Nil keeps the link-only email.
+	// OTPCodePath. Nil keeps SMTP email link-only. Managed delivery enables
+	// code sign-in independently of this renderer.
 	OTPCodeEmail func(OTPCodeEmail) (subject, html, plain string)
 }
 

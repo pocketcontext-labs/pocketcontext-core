@@ -37,6 +37,7 @@ type localRoutes struct {
 	publicURL string
 	mcp       bool
 	hosted    bool
+	codeOnly  bool
 	clock     func() time.Time // hosted rate limits; nil means time.Now
 
 }
@@ -155,7 +156,7 @@ func (l *localRoutes) register(e *core.ServeEvent) error {
 	id := rt.cfg.Identity
 	if l.hosted {
 		registerHostedRateLimitsClock(e, rt, l.now)
-		registerHostedOTPCodeRoute(e, rt)
+		registerHostedOTPCodeRoute(e, rt, l.codeOnly)
 	}
 	// DNS rebinding protection: a web page cannot reach this server under another name.
 	e.Router.Bind(&hook.Handler[*core.RequestEvent]{
@@ -180,6 +181,9 @@ func (l *localRoutes) register(e *core.ServeEvent) error {
 			mode = "email"
 		}
 		re.Response.Header().Set("Cache-Control", "no-store")
+		if l.codeOnly {
+			return re.JSON(http.StatusOK, map[string]any{"mode": mode, "codeOnly": true})
+		}
 		return re.JSON(http.StatusOK, map[string]string{"mode": mode})
 	})
 	if rt.cfg.Hooks.Routes != nil {

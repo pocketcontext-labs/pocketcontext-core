@@ -377,6 +377,7 @@ func ServeContext(parent context.Context, p *Project, opts ServeOptions) (result
 			if err := configureHosted(p.rt, app, opts.HTTPSDomain, opts.HostedConfig, opts.HostedInit); err != nil {
 				return err
 			}
+			local.codeOnly = opts.HostedConfig.SendSignInCode != nil
 			if err := atomicfile.WriteAtomic(filepath.Join(p.Cache, "hosted.json"), []byte(`{"version":1}`), 0600); err != nil {
 				return err
 			}
